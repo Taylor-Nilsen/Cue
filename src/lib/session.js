@@ -22,6 +22,7 @@ const EMPTY = {
   settings: { ...DEFAULT_SETTINGS },
   source: null, // 'pdf' | 'cue'
   scanned: false,
+  notes: {},
 };
 
 export const session = writable({ ...EMPTY });
@@ -44,7 +45,7 @@ export function resetSession() {
  * casting is something you adjust, never something you have to do from
  * scratch before you can hear anything.
  */
-export function startFromScript({ title, lines, characters }, { scanned = false } = {}) {
+export function startFromScript({ title, lines, characters, notes = {} }, { scanned = false } = {}) {
   const withGender = characters.map((c) => ({ ...c, gender: guessGender(c.name) }));
   // An unknown gender still needs *a* voice so the screen isn't half-empty
   // while you answer; men's voices are the arbitrary default, and the moment
@@ -55,6 +56,7 @@ export function startFromScript({ title, lines, characters }, { scanned = false 
     title,
     lines,
     scanned,
+    notes,
     source: 'pdf',
     settings: { ...DEFAULT_SETTINGS },
     characters: withGender.map((c, i) => ({
@@ -75,6 +77,7 @@ export function startFromCueFile(parsed) {
     title: parsed.title,
     lines: parsed.lines,
     scanned: false,
+    notes: {},
     source: 'cue',
     settings: { ...DEFAULT_SETTINGS, ...parsed.settings },
     characters: parsed.characters.map((c, i) => ({
