@@ -90,4 +90,16 @@
     border-radius: 999px;
     border: 1px solid rgba(255, 255, 255, 0.35);
   }
+
+  /* On a phone the curtain was eating the whole first screen and pushing the
+     drop zone below the fold. The point of the page is the drop zone. */
+  @media (max-width: 560px) {
+    .hero { border-radius: 26px; padding: 8px; }
+    .hero-inner { padding: 22px 18px 18px; border-radius: 20px; }
+    .hero-inner h1 { font-size: 2.9rem; }
+    .tagline { font-size: 1rem; }
+    .stage { max-width: 300px; margin: 10px auto 2px; }
+    .pill-row { margin-top: 12px; }
+    .pill { font-size: 0.72rem; padding: 5px 11px; }
+  }
 </style>
