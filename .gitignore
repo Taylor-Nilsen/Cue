@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Vendored at install time by scripts/copy-assets.mjs — ~21 MB of wasm and
+# OCR language data that has no business in the repo.
+public/tess/

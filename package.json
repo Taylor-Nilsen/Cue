@@ -1,0 +1,24 @@
+{
+  "name": "cue",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/copy-assets.mjs && vite build",
+    "preview": "vite preview",
+    "postinstall": "node scripts/copy-assets.mjs"
+  },
+  "dependencies": {
+    "@fontsource/caveat": "^5.3.0",
+    "@fontsource/fredoka": "^5.3.0",
+    "@fontsource/karla": "^5.3.0",
+    "@sveltejs/vite-plugin-svelte": "^3.1.2",
+    "kokoro-js": "^1.2.1",
+    "pdfjs-dist": "^4.8.69",
+    "svelte": "^4.2.20",
+    "tesseract.js": "^5.1.1",
+    "vite": "^5.4.21"
+  },
+  "description": "Rehearse your lines out loud with an AI scene partner — entirely in the browser."
+}
