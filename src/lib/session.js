@@ -117,6 +117,32 @@ export function updateLine(id, patch) {
   }));
 }
 
+/**
+ * Break one line into two at the caret. OCR mashes a cue and its dialogue
+ * together often enough that this needs to be one tap, not a re-upload.
+ */
+export function splitLine(id, at) {
+  session.update((s) => {
+    const index = s.lines.findIndex((l) => l.id === id);
+    if (index < 0) return s;
+    const line = s.lines[index];
+    const head = line.text.slice(0, at).trim();
+    const tail = line.text.slice(at).trim();
+    if (!head || !tail) return s;
+
+    const lines = [...s.lines];
+    lines.splice(index, 1,
+      { ...line, text: head, shaky: [] },
+      { ...line, id: nextId(s.lines), text: tail, shaky: [] },
+    );
+    return { ...s, lines };
+  });
+}
+
+function nextId(lines) {
+  return lines.reduce((max, l) => Math.max(max, l.id ?? 0), 0) + 1;
+}
+
 export function deleteLine(id) {
   session.update((s) => ({ ...s, lines: s.lines.filter((l) => l.id !== id) }));
 }
