@@ -28,11 +28,65 @@ export function parseScript(pages, fallbackTitle = 'Untitled script') {
     })),
   }));
 
+  denoise(withMeta);
   stripRunningHeads(withMeta);
   const body = trimMatter(withMeta);
   const title = findTitle(withMeta, fallbackTitle);
   const lines = classify(body);
   return { title, lines, characters: collectCharacters(lines) };
+}
+
+/* --------------------------------------------------------------- denoise */
+
+/**
+ * Scanner litter, removed before anything tries to read meaning into it.
+ *
+ * The seam down the left edge of a photocopy comes back as a stray ":" or "3"
+ * or "i" glued to the front of the line, and the top of a page can produce a
+ * run of pure garbage. Left alone, the first kind corrupts character names and
+ * the second gets read aloud in a rehearsal.
+ *
+ * Every rule here leans on OCR's own confidence, so a clean text layer — where
+ * every word is fully confident — passes through untouched.
+ */
+function denoise(pages) {
+  for (const page of pages) {
+    page.lines = page.lines
+      .map(stripLeadingLitter)
+      .filter((line) => line && !isLitter(line));
+  }
+}
+
+function stripLeadingLitter(line) {
+  const words = line.words ?? [];
+  if (words.length < 2) return line;
+
+  const first = words[0];
+  const stray =
+    first.text.length === 1 &&
+    !/^[AI]$/i.test(first.text) &&
+    (first.conf < 60 || !/[A-Za-z0-9]/.test(first.text));
+  if (!stray) return line;
+
+  const rest = words.slice(1);
+  return { ...line, words: rest, text: rest.map((w) => w.text).join(' ') };
+}
+
+function isLitter(line) {
+  const text = line.text.trim();
+  if (!text) return true;
+  if (!/[A-Za-z0-9]/.test(text)) return true; // a lone ":" or "|"
+
+  const words = line.words ?? [];
+  if (!words.length) return true;
+  const confidence = words.reduce((sum, w) => sum + (w.conf ?? 100), 0) / words.length;
+  if (confidence >= 45) return false;
+
+  // Low confidence on its own isn't enough — a smudged character name is still
+  // a character name. It's low confidence *and* a line made mostly of
+  // punctuation that means the scanner was reading a coffee ring.
+  const junk = (text.match(/[^A-Za-z0-9\s]/g) || []).length / text.length;
+  return junk > 0.3;
 }
 
 /* ------------------------------------------------- running heads & matter */
@@ -48,23 +102,64 @@ function stripRunningHeads(pages) {
   for (const page of pages) {
     for (const line of page.lines) {
       if (line.yFrac > 0.09 && line.yFrac < 0.91) continue;
-      const key = `${line.yFrac < 0.5 ? 'top' : 'bottom'}|${line.text.replace(/\d+/g, '#').toLowerCase().trim()}`;
+      const key = headKey(line);
+      if (!key) continue;
       if (!seen.has(key)) seen.set(key, new Set());
       seen.get(key).add(page.number);
     }
   }
   const minPages = Math.max(2, pages.length * 0.4);
-  const repeated = new Set(
-    [...seen.entries()].filter(([, p]) => p.size >= minPages).map(([k]) => k),
-  );
-  if (!repeated.size) return;
+  const repeated = [...seen.entries()].filter(([, p]) => p.size >= minPages).map(([k]) => k);
+  if (!repeated.length) return;
   for (const page of pages) {
     page.lines = page.lines.filter((line) => {
       if (line.yFrac > 0.09 && line.yFrac < 0.91) return true;
-      const key = `${line.yFrac < 0.5 ? 'top' : 'bottom'}|${line.text.replace(/\d+/g, '#').toLowerCase().trim()}`;
-      return !repeated.has(key);
+      const key = headKey(line);
+      return !key || !repeated.some((known) => nearlySame(known, key));
     });
   }
+}
+
+/**
+ * The same header can come back badly enough mangled that even the letters
+ * differ — one page of this script read "PFTFR AND THE STARCATCHER". Allowing
+ * a few characters of slop catches those without catching real lines, which
+ * are nowhere near this similar to a running title.
+ */
+function nearlySame(a, b, tolerance = 4) {
+  if (a === b) return true;
+  if (a.slice(0, a.indexOf('|')) !== b.slice(0, b.indexOf('|'))) return false; // different edge
+  if (Math.abs(a.length - b.length) > tolerance) return false;
+
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(
+        previous[j] + 1,
+        row[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      best = Math.min(best, row[j]);
+    }
+    if (best > tolerance) return false; // no path can recover from here
+    previous = row;
+  }
+  return previous[b.length] <= tolerance;
+}
+
+/**
+ * A running head reads the same on every page — but OCR doesn't. The same
+ * title strip came back as "PETER AND THE STARCATCHER -7 =" on one page and
+ * "PETER AND THE STARCATCHER Ld" on the next, so matching the whole line
+ * exactly missed every one of them and the title ended up cast as a character.
+ * Keying on the first stretch of letters alone survives the noise.
+ */
+function headKey(line) {
+  const letters = line.text.replace(/[^A-Za-z]/g, '').toLowerCase();
+  if (letters.length < 6) return null;
+  return `${line.yFrac < 0.5 ? 'top' : 'bottom'}|${letters.slice(0, 18)}`;
 }
 
 /** Set aside the cover page, the cast list, and whatever's stapled to the back. */
@@ -131,20 +226,41 @@ function classify(flat) {
     }
 
     if (isStageDirection(line, text)) {
-      out.push(make('stage', null, stripWrappers(text), line));
+      const entry = make('stage', null, stripWrappers(text), line);
+      entry.open = bracketBalance(text);
+      entry.wrapped = ranToMargin(line, rightMargin) && entry.open > 0;
+      out.push(entry);
       continue;
     }
 
-    // "HAMLET. To be, or not to be" — cue and line sharing a row.
-    const inline = text.match(CUE_INLINE_RE);
-    if (inline && isNameShaped(inline[1]) && inline[2].length > 2) {
-      speaker = displayName(inline[1].replace(/[.:]$/, ''));
-      out.push(make('dialogue', speaker, inline[2].trim(), line));
+    // A stage direction that ran to the right margin continues on the next
+    // line, and its tail must not be mistaken for a cue — "…then to MRS." /
+    // "BUMBRAKE)" was landing in the cast list as a character called
+    // "BUMBRAKE)".
+    const above = out[out.length - 1];
+    if (above && above.type === 'stage' && above.wrapped && above.page === line.page) {
+      above.text = `${above.text} ${stripWrappers(text)}`.replace(/\s+/g, ' ');
+      above.words = [...above.words, ...toWords(line)];
+      above.open += bracketBalance(text);
+      above.wrapped = ranToMargin(line, rightMargin) && above.open > 0;
       continue;
+    }
+
+    // "HAMLET. To be, or not to be" — cue and line sharing a row. Checked
+    // only once the whole line has been ruled out as a cue in its own right,
+    // or "MRS. BUMBRAKE" gets torn into a character called MRS saying the
+    // word "BUMBRAKE".
+    if (!isNameShaped(text)) {
+      const inline = text.match(CUE_INLINE_RE);
+      if (inline && isNameShaped(inline[1]) && inline[2].length > 2 && !isNameShaped(inline[2])) {
+        speaker = cueName(inline[1]);
+        out.push(make('dialogue', speaker, inline[2].trim(), line));
+        continue;
+      }
     }
 
     if (looksLikeCue(line, flat, i)) {
-      speaker = displayName(text.replace(/[.:]\s*$/, ''));
+      speaker = cueName(text);
       continue;
     }
 
@@ -159,13 +275,31 @@ function classify(flat) {
       continue;
     }
 
-    out.push({
-      ...make(speaker ? 'dialogue' : 'stage', speaker, text, line),
-      wrapped: line.right >= rightMargin - 0.03,
-    });
+    out.push(wrapAware(make(speaker ? 'dialogue' : 'stage', speaker, text, line), line, rightMargin));
   }
 
-  return out.map((l, i) => ({ ...l, id: i, wrapped: undefined }));
+  return out.map((l, i) => ({ ...l, id: i, wrapped: undefined, open: undefined }));
+}
+
+/** Did this line run to the right margin? If so, the next one continues it. */
+function wrapAware(entry, line, rightMargin) {
+  return { ...entry, wrapped: ranToMargin(line, rightMargin) };
+}
+
+function ranToMargin(line, rightMargin) {
+  return line.right >= rightMargin - 0.03;
+}
+
+/**
+ * Stage direction needs a stricter test than dialogue does, and the bracket is
+ * the honest signal — not punctuation. "(…then to MRS." ends in a full stop
+ * but is plainly unfinished, while "(…a military cadence.)" is closed and
+ * must not reach down and swallow the cue on the next line.
+ */
+function bracketBalance(text) {
+  const open = (text.match(/[([]/g) || []).length;
+  const close = (text.match(/[)\]]/g) || []).length;
+  return open - close;
 }
 
 function make(type, speaker, text, line) {
@@ -228,10 +362,28 @@ function isNameShaped(raw) {
   const text = raw.trim().replace(/\((?:[^)]*)\)/g, '').replace(/[.:]\s*$/, '').trim();
   if (!text || text.length > 34) return false;
   if (text.split(/\s+/).length > 4) return false;
+  // Sung lyrics are set in capitals too, and a page of them will happily
+  // masquerade as a cast list. A cue never trails off mid-clause.
+  if (/[,;\u2013\u2014-]$/.test(text)) return false;
   const letters = text.replace(/[^A-Za-z]/g, '');
   if (letters.length < 2) return false;
   const upper = text.replace(/[^A-Z]/g, '').length;
   return upper / letters.length >= 0.7;
+}
+
+/**
+ * Tidy a cue into a character name. The margin seam on a photocopy arrives as
+ * a leading "3 " or "- " or "i ", and without this the cast list comes back
+ * holding PRENTISS, "3 PRENTISS", and "= PRENTISS" as three different people.
+ */
+function cueName(raw) {
+  const text = String(raw)
+    .replace(/^[^A-Za-z(]+/, '')
+    .replace(/^(?![AI]\s)[A-Za-z]\s+(?=[A-Z])/, '')
+    .replace(/[.:]\s*$/, '')
+    .replace(/\s+[^A-Za-z0-9)\s]+$/, '')
+    .trim();
+  return displayName(text || raw);
 }
 
 function stripWrappers(text) {
