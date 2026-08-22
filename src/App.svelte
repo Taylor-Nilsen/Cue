@@ -5,10 +5,15 @@
   import Working from './components/Working.svelte';
   import Review from './components/Review.svelte';
   import Casting from './components/Casting.svelte';
+  import Reader from './components/Reader.svelte';
 </script>
 
 <main class="wrap">
-  <Curtain compact={$stage !== 'upload'} />
+  <!-- The reading screen gives the script the whole page; a logo helps nobody
+       who is mid-scene. -->
+  {#if $stage !== 'reader'}
+    <Curtain compact={$stage !== 'upload'} />
+  {/if}
 
   {#if $stage === 'upload'}
     <Upload />
@@ -18,5 +23,7 @@
     <Review />
   {:else if $stage === 'casting'}
     <Casting />
+  {:else if $stage === 'reader'}
+    <Reader />
   {/if}
 </main>
