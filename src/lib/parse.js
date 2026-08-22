@@ -33,9 +33,12 @@ export function parseScript(pages, fallbackTitle = 'Untitled script') {
   // signal we're looking for.
   const scorePagesSetAside = trimScore(withMeta);
   denoise(withMeta);
+  // Read the title before the running-head pass: on many scripts the cover
+  // title and the running head are the same words, and stripping one loses
+  // the other.
+  const title = findTitle(withMeta, fallbackTitle);
   stripRunningHeads(withMeta);
   const body = trimMatter(withMeta);
-  const title = findTitle(withMeta, fallbackTitle);
   const lines = classify(body);
   return {
     title,
@@ -246,11 +249,34 @@ function firstOfPage(flat, index) {
   return 0;
 }
 
+/**
+ * Section labels that are never the name of the play. A scanned script often
+ * opens on the cast list rather than a cover, and "Characters" is a worse
+ * title than the filename the user chose.
+ */
+const SECTION_LABEL = /^(characters?|cast|cast of characters|dramatis personae|contents|table of contents|synopsis|scenes?|musical numbers?|acts?|setting|time and place|notes?|for .{0,30})$/i;
+
 function findTitle(pages, fallback) {
   const firstPage = pages[0]?.lines ?? [];
-  const candidate = firstPage.find(
-    (l) => l.text.length > 2 && l.text.length < 70 && !/^\d+$/.test(l.text) && !SCENE_RE.test(l.text),
-  );
+
+  // A scan that opens on the cast list has no cover to read. Every line on it
+  // is a character and a description, so the filename the user chose is the
+  // better answer than anything on the page.
+  const isCastList = firstPage
+    .slice(0, 6)
+    .some((l) => SECTION_LABEL.test(l.text.trim().replace(/[.:]$/, '')));
+  if (isCastList) return fallback;
+
+  const candidate = firstPage.find((l) => {
+    const text = l.text.trim();
+    return (
+      text.length > 2 &&
+      text.length < 70 &&
+      !/^\d+$/.test(text) &&
+      !SCENE_RE.test(text) &&
+      !SECTION_LABEL.test(text.replace(/[.:]$/, '').trim())
+    );
+  });
   if (!candidate) return fallback;
   return titleCase(candidate.text.replace(/^["'“]|["'”]$/g, '').trim()) || fallback;
 }
