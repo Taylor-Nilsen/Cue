@@ -4,6 +4,7 @@
   import Upload from './components/Upload.svelte';
   import Working from './components/Working.svelte';
   import Review from './components/Review.svelte';
+  import Casting from './components/Casting.svelte';
 </script>
 
 <main class="wrap">
@@ -15,5 +16,7 @@
     <Working />
   {:else if $stage === 'review'}
     <Review />
+  {:else if $stage === 'casting'}
+    <Casting />
   {/if}
 </main>
