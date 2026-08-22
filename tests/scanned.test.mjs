@@ -180,3 +180,99 @@ test('a parenthetical that already closed does not swallow the cue below it', ()
   const stage = lines.find((l) => /Trimly uniformed/.test(l.text));
   assert.ok(!/SEAMEN march on.*SEAMEN/.test(stage.text), 'the cue was absorbed into the stage direction');
 });
+
+test('a name is not split in four by a mark at the end of the line', () => {
+  const { characters } = parseScript(
+    pages(
+      filler(1),
+      filler(2, [
+        cue('ASTER', 306),
+        speech("There's my little Starcatcher.", 340),
+        line('ASTER i', 690, 400, { confs: [95, 41] }),
+        speech('Just an apprentice, really.', 434),
+        line('ASTER H', 690, 494, { confs: [94, 38] }),
+        speech('Off you go, then.', 528),
+        line('ASTER )', 690, 588, { confs: [95, 30] }),
+        speech('And mind the trunk.', 622),
+      ]),
+      filler(3),
+    ),
+  );
+
+  const aster = characters.filter((c) => /^ASTER/.test(c.name));
+  assert.equal(aster.length, 1, `ASTER came back as ${aster.map((c) => c.name).join(', ')}`);
+  assert.equal(aster[0].lineCount, 4);
+});
+
+test('a mark the scanner was confident about is part of the name', () => {
+  const { characters } = parseScript(
+    pages(
+      filler(1),
+      filler(2, [
+        cue('TENOR 2', 306),
+        speech('Dive and swim, and swim on.', 340),
+        cue('TENOR 2', 400),
+        speech('Against the tide, and on.', 434),
+        cue('TENOR 2', 494),
+        speech('And on, and on again.', 528),
+      ]),
+      filler(3),
+    ),
+  );
+
+  assert.ok(characters.some((c) => c.name === 'TENOR 2'), 'a meaningful number was stripped off');
+});
+
+test('an established name swallows its scanner ghosts, but not a real variant', () => {
+  const many = [];
+  for (let i = 0; i < 6; i++) {
+    many.push(cue('FIGHTING PRAWN', 300 + i * 90), speech(`Line number ${i} of the chief.`, 335 + i * 90));
+  }
+  const { characters } = parseScript(
+    pages(
+      filler(1),
+      filler(2, many),
+      filler(3, [
+        line('FIGHTING PRAWN i', 690, 306, { confs: [95, 94, 40] }),
+        speech('A ghost of the same chief.', 340),
+        cue('FIGHTING', 400),
+        speech('A different cue the scanner truncated.', 434),
+      ]),
+    ),
+  );
+
+  const names = characters.map((c) => c.name);
+  assert.ok(!names.includes('FIGHTING PRAWN i'), 'a one-letter ghost was left in the cast');
+  assert.ok(
+    names.includes('FIGHTING'),
+    'a genuinely different cue was folded away without asking — that belongs in the look-over',
+  );
+});
+
+test('a vocal score bound in at the back is set aside', () => {
+  // A page of staves: low confidence, and mostly one- and two-character
+  // fragments where OCR tried to read notation and split syllables.
+  const scorePage = () => {
+    const lines = [];
+    for (let i = 0; i < 10; i++) {
+      lines.push(
+        line('re = ud = i 5 TIT a', 120, 100 + i * 60, { conf: 55 }),
+        line('nev - er be fish a - gain be - cause', 300, 130 + i * 60, { conf: 62 }),
+      );
+    }
+    return lines;
+  };
+
+  const { notes, characters } = parseScript(
+    pages(filler(1), filler(2), filler(3), scorePage(), scorePage(), scorePage()),
+  );
+
+  assert.equal(notes.scorePagesSetAside, 3);
+  assert.ok(!characters.some((c) => /TIT|nev/.test(c.name)), 'notation was cast as a character');
+});
+
+test('one rough page in the middle is not mistaken for a score', () => {
+  const rough = [line('re = ud = i 5 TIT a', 120, 100, { conf: 55 })];
+  const { notes } = parseScript(pages(filler(1), rough, filler(2), filler(3)));
+  assert.equal(notes.scorePagesSetAside, 0, 'a bad page mid-script is just a bad page');
+});

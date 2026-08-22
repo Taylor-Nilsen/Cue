@@ -41,6 +41,17 @@
     {/if}
   </div>
 
+  {#if $session.notes?.scorePagesSetAside}
+    <div class="callout">
+      <span class="kicker">set aside</span>
+      <p>
+        The last {$session.notes.scorePagesSetAside} pages looked like sheet music rather than
+        script — staves and syllables split across barlines, which nothing can read aloud
+        sensibly. They've been left out. If that's wrong, the script is still whole in your PDF.
+      </p>
+    </div>
+  {/if}
+
   {#if $session.scanned && stats.shaky > 0}
     <div class="callout">
       <span class="kicker">the underlined bits</span>

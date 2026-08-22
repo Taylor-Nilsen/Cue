@@ -28,12 +28,60 @@ export function parseScript(pages, fallbackTitle = 'Untitled script') {
     })),
   }));
 
+  // Score detection runs on raw OCR, before denoise: cleaning the worst lines
+  // off a page of staves lifts its average confidence and hides exactly the
+  // signal we're looking for.
+  const scorePagesSetAside = trimScore(withMeta);
   denoise(withMeta);
   stripRunningHeads(withMeta);
   const body = trimMatter(withMeta);
   const title = findTitle(withMeta, fallbackTitle);
   const lines = classify(body);
-  return { title, lines, characters: collectCharacters(lines) };
+  return {
+    title,
+    lines,
+    characters: collectCharacters(lines),
+    notes: { scorePagesSetAside },
+  };
+}
+
+/* ----------------------------------------------------------------- score */
+
+/**
+ * Many published scripts have the vocal score bound in at the back, and a page
+ * of staves is not something OCR can read — it comes back as "re = ud =" and
+ * "dome TIT 5" and syllables split across barlines. Left in, twenty-five pages
+ * of that fill the cast list with ghosts and would be read aloud mid-song.
+ *
+ * Two signals separate them cleanly: on this script the dialogue pages
+ * averaged 91% confidence with 21% one- and two-character tokens, while the
+ * score pages averaged 62% and 62%. The boundary between them was one page
+ * wide.
+ *
+ * Only a run at the very back is ever dropped, and only a run of at least
+ * three pages. A score lives at the back; a bad page in the middle is just a
+ * bad page, and the look-over exists for those.
+ */
+const SCORE_MIN_RUN = 3;
+
+function trimScore(pages) {
+  let first = pages.length;
+  while (first > 0 && looksLikeScore(pages[first - 1])) first--;
+
+  const run = pages.length - first;
+  if (run < SCORE_MIN_RUN || first === 0) return 0;
+  pages.splice(first, run);
+  return run;
+}
+
+function looksLikeScore(page) {
+  const words = page.lines.flatMap((l) => l.words ?? []);
+  if (words.length < 20) return false;
+
+  const confidence = words.reduce((sum, w) => sum + (w.conf ?? 100), 0) / words.length;
+  const fragments =
+    words.filter((w) => w.text.replace(/[^A-Za-z0-9]/g, '').length <= 2).length / words.length;
+  return confidence < 75 && fragments > 0.45;
 }
 
 /* --------------------------------------------------------------- denoise */
@@ -253,14 +301,14 @@ function classify(flat) {
     if (!isNameShaped(text)) {
       const inline = text.match(CUE_INLINE_RE);
       if (inline && isNameShaped(inline[1]) && inline[2].length > 2 && !isNameShaped(inline[2])) {
-        speaker = cueName(inline[1]);
+        speaker = cueName(inline[1], line.words);
         out.push(make('dialogue', speaker, inline[2].trim(), line));
         continue;
       }
     }
 
     if (looksLikeCue(line, flat, i)) {
-      speaker = cueName(text);
+      speaker = cueName(text, line.words);
       continue;
     }
 
@@ -278,6 +326,7 @@ function classify(flat) {
     out.push(wrapAware(make(speaker ? 'dialogue' : 'stage', speaker, text, line), line, rightMargin));
   }
 
+  foldScannedVariants(out);
   return out.map((l, i) => ({ ...l, id: i, wrapped: undefined, open: undefined }));
 }
 
@@ -372,22 +421,95 @@ function isNameShaped(raw) {
 }
 
 /**
- * Tidy a cue into a character name. The margin seam on a photocopy arrives as
- * a leading "3 " or "- " or "i ", and without this the cast list comes back
- * holding PRENTISS, "3 PRENTISS", and "= PRENTISS" as three different people.
+ * Tidy a cue into a character name.
+ *
+ * The margin seam on a photocopy prints a stray mark at both ends of the line,
+ * so the cast list comes back holding PRENTISS, "3 PRENTISS", "= PRENTISS",
+ * "ASTER i" and "MOLLY )" as separate people. A mark is only removed when OCR
+ * itself was unsure of it, or when it isn't a character at all — a confident
+ * "TENOR 2" keeps its 2.
  */
-function cueName(raw) {
-  const text = String(raw)
+function cueName(raw, words = null) {
+  let text = String(raw);
+
+  if (words?.length > 1) {
+    const tokens = [...words];
+    while (tokens.length > 1 && isMargin(tokens[0])) tokens.shift();
+    while (tokens.length > 1 && isMargin(tokens[tokens.length - 1])) tokens.pop();
+    if (tokens.length !== words.length) text = tokens.map((w) => w.text).join(' ');
+  }
+
+  text = text
     .replace(/^[^A-Za-z(]+/, '')
     .replace(/^(?![AI]\s)[A-Za-z]\s+(?=[A-Z])/, '')
     .replace(/[.:]\s*$/, '')
     .replace(/\s+[^A-Za-z0-9)\s]+$/, '')
     .trim();
-  return displayName(text || raw);
+  return displayName(text || String(raw).trim());
+}
+
+/** A stray mark from the edge of the page rather than part of the name. */
+function isMargin(word) {
+  const text = word.text.trim();
+  if (!text) return true;
+  if (!/[A-Za-z0-9]/.test(text)) return true;
+  if (/\d/.test(text)) return false;      // "TENOR 2" means it
+  if (text.length > 2) return false;
+  return (word.conf ?? 100) < 65;
 }
 
 function stripWrappers(text) {
   return text.replace(/^\s*[([]\s*/, '').replace(/\s*[)\]]\s*$/, '').trim();
+}
+
+/**
+ * Fold the obvious scanner variants of a name back into it.
+ *
+ * On a 176-page photocopy the same character turns up as "MOLLY", "MOLLY i",
+ * "MOLLY H" and "MOLLY )" — three ghosts holding a line each, cluttering the
+ * cast list and, worse, each getting cast with a different voice.
+ *
+ * Only the unarguable cases are folded: a rare name that is an established
+ * name plus a scrap of at most three letters. Anything with more to it than
+ * that — "FIGHTING" beside "FIGHTING PRAWN" — is left for the look-over,
+ * where a person can decide. Guessing there would be worse than asking.
+ */
+const ESTABLISHED_LINES = 5;
+const RARE_LINES = 2;
+const SCRAP_LETTERS = 3;
+
+function foldScannedVariants(lines) {
+  const counts = new Map();
+  for (const line of lines) {
+    if (line.type === 'dialogue' && line.speaker) {
+      counts.set(line.speaker, (counts.get(line.speaker) ?? 0) + 1);
+    }
+  }
+
+  const established = [...counts.entries()]
+    .filter(([, n]) => n >= ESTABLISHED_LINES)
+    .map(([name]) => name)
+    .sort((a, b) => b.length - a.length); // prefer the longest match
+
+  const folded = new Map();
+  for (const [name, n] of counts) {
+    if (n > RARE_LINES || established.includes(name)) continue;
+    const parent = established.find((known) => isScrapOf(name, known));
+    if (parent) folded.set(name, parent);
+  }
+  if (!folded.size) return;
+
+  for (const line of lines) {
+    const parent = folded.get(line.speaker);
+    if (parent) line.speaker = parent;
+  }
+}
+
+function isScrapOf(name, known) {
+  if (name === known || !name.startsWith(known)) return false;
+  const rest = name.slice(known.length);
+  if (/\d/.test(rest)) return false; // "TENOR 2" is not a scrap of "TENOR"
+  return rest.replace(/[^A-Za-z]/g, '').length <= SCRAP_LETTERS;
 }
 
 /* -------------------------------------------------------------- assembly */
