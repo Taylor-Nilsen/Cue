@@ -1,7 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import { stage, setProgress, clearProgress } from '../lib/stage.js';
-  import { startFromScript, startFromCueFile } from '../lib/session.js';
+  import { get } from 'svelte/store';
+  import { session, startFromScript, startFromCueFile } from '../lib/session.js';
   import { looksLikeCueFile, parse as parseCueFile } from '../lib/cuefile.js';
   import { loadDraft, clearDraft } from '../lib/autosave.js';
   import { unlockAudio } from '../lib/tts.js';
@@ -27,7 +28,7 @@
       const head = await file.slice(0, 4096).text().catch(() => '');
       if (looksLikeCueFile(head)) {
         startFromCueFile(parseCueFile(await file.text()));
-        stage.set('reader');
+        stage.set(resumeStage());
         return;
       }
 
@@ -73,7 +74,16 @@
 
   async function resume() {
     startFromCueFile(parseCueFile(draft.text));
-    stage.set('reader');
+    stage.set(resumeStage());
+  }
+
+  /**
+   * Straight to the reading screen — unless nobody's been ticked as "you"
+   * yet, in which case the reader would never pause and the whole thing would
+   * just play at you.
+   */
+  function resumeStage() {
+    return get(session).characters.some((c) => c.isYou) ? 'reader' : 'casting';
   }
 
   async function dismissDraft() {
