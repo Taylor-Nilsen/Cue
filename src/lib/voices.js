@@ -57,6 +57,33 @@ export function voiceGender(id) {
 }
 
 /**
+ * Saved files refer to voices by a friendly slug — female_1, male_2, narrator —
+ * rather than by the model's own ids. The slug is what someone sees if they
+ * open a .cue.md in a text editor, and it survives us swapping the underlying
+ * voice model later.
+ */
+export function voiceSlug(id) {
+  if (id === NARRATOR_VOICE) return 'narrator';
+  const f = FEMALE_VOICES.findIndex((v) => v.id === id);
+  if (f >= 0) return `female_${f + 1}`;
+  const m = MALE_VOICES.findIndex((v) => v.id === id);
+  if (m >= 0) return `male_${m + 1}`;
+  return id;
+}
+
+export function voiceFromSlug(slug) {
+  if (!slug) return null;
+  if (slug === 'narrator') return NARRATOR_VOICE;
+  const match = /^(female|male)_(\d+)$/.exec(String(slug).trim());
+  if (match) {
+    const pool = match[1] === 'female' ? FEMALE_VOICES : MALE_VOICES;
+    return pool[(Number(match[2]) - 1) % pool.length]?.id ?? pool[0].id;
+  }
+  // Someone may have hand-edited in a raw model id; honour it if we know it.
+  return BY_ID.has(slug) ? slug : null;
+}
+
+/**
  * Hand out voices in first-appearance order: women get the women's voices in
  * order, men get the men's the same way. Pools wrap around rather than running
  * out, so a 30-character crowd scene still casts.
