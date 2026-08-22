@@ -276,3 +276,18 @@ test('one rough page in the middle is not mistaken for a score', () => {
   const { notes } = parseScript(pages(filler(1), rough, filler(2), filler(3)));
   assert.equal(notes.scorePagesSetAside, 0, 'a bad page mid-script is just a bad page');
 });
+
+test('a cast-list page does not name the play "Characters"', () => {
+  const front = [line('CHARACTERS', 240, 60), line('MOLLY, a girl of thirteen', 220, 96)];
+  const { title } = parseScript(
+    pages(front, filler(1), filler(2), filler(3)),
+    'Peter and the Starcatcher Script',
+  );
+  assert.equal(title, 'Peter and the Starcatcher Script');
+});
+
+test('a real cover page still wins over the filename', () => {
+  const front = [line('PETER AND THE STARCATCHER', 240, 60), line('a play in two acts', 250, 96)];
+  const { title } = parseScript(pages(front, filler(1), filler(2), filler(3)), 'scan001.pdf');
+  assert.equal(title, 'Peter and the Starcatcher');
+});
