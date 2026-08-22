@@ -9,5 +9,18 @@ import '@fontsource/caveat/700.css';
 import './styles/global.css';
 
 import App from './App.svelte';
+import { startAutosave } from './lib/persist.js';
+
+startAutosave();
+
+// Registered in production only — a service worker caching a dev server is a
+// morning wasted wondering why an edit didn't take.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((err) => {
+      console.warn('[cue] offline support unavailable', err);
+    });
+  });
+}
 
 export default new App({ target: document.getElementById('app') });
