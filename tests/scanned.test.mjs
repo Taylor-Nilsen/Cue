@@ -291,3 +291,103 @@ test('a real cover page still wins over the filename', () => {
   const { title } = parseScript(pages(front, filler(1), filler(2), filler(3)), 'scan001.pdf');
   assert.equal(title, 'Peter and the Starcatcher');
 });
+
+test('the play starts at the play, not at the contents page', () => {
+  // Front matter that has fooled every line-by-line rule: a cast page whose
+  // section headings sit over paragraphs, then a contents page which is
+  // nothing but a column of scene headings.
+  const castPage = [
+    line('CHARACTERS', 240, 60),
+    line('THE ORPHANS', 240, 96),
+    line('Boy (Peter): A boy who does not miss much, nameless and homeless at the start.', 200, 130, 1180),
+    line('Prentiss: Ambitious, hyper-articulate, logical; yearns to be a leader.', 200, 166, 1180),
+    line('THE BRITISH SUBJECTS', 240, 200),
+    line('Molly Aster: A girl of thirteen who is nobody to trifle with at all.', 200, 236, 1180),
+  ];
+  const contentsPage = [
+    line('ACT ONE', 240, 60),
+    line('4. BILGE DUNGEON ..................................... 22', 200, 96),
+    line('#5) Grempkin Flashback ............................. 24', 200, 130),
+    line('ACT TWO', 240, 166),
+    line('1. MOUNTAINTOP, MOLLUSK ISLAND ....... 74', 200, 200),
+    line('#19) Mermaid Playoff ................................ 74', 200, 236),
+  ];
+  const scene = (n) => {
+    // Clear of the running-head band, and distinct per page, so this fixture
+    // exercises front matter rather than the header stripper.
+    const out = [line(n === 1 ? 'PROLOGUE: A Bare Stage' : `SCENE ${n}: On Deck`, 374, 200)];
+    let y = 260;
+    const speakers = ['BOY', 'PRENTISS', 'SCOTT', 'SMEE', 'MOLLY', 'ASTER'];
+    for (const who of speakers) {
+      out.push(cue(who, y), speech(`Line ${n} from ${who.toLowerCase()}, spoken plainly.`, y + 34));
+      y += 74;
+    }
+    return out;
+  };
+
+  const { lines, characters } = parseScript(pages(castPage, contentsPage, scene(1), scene(2)));
+
+  assert.equal(lines[0].type, 'scene');
+  assert.equal(lines[0].text, 'PROLOGUE: A Bare Stage');
+  assert.ok(!lines.some((l) => /BILGE DUNGEON|Mermaid Playoff/.test(l.text)), 'contents survived');
+  assert.ok(!lines.some((l) => /hyper-articulate|nameless and homeless/.test(l.text)), 'cast page survived');
+  assert.ok(!characters.some((c) => /CHARACTERS|THE ORPHANS|ACT ONE/.test(c.name)));
+});
+
+test('a shout under a cue is a line, not a second name', () => {
+  const { lines } = parseScript(
+    pages(
+      filler(1),
+      filler(2, [
+        cue('BOXING ANNOUNCER', 306),
+        speech('This is a one-round knockout match, no rules at all.', 340),
+        line('ALL', 728, 400),
+        line('WE LOVE IT!', 315, 434),
+        cue('BOXING ANNOUNCER', 494),
+        speech('Now shake hands and come out rhyming!', 528),
+      ]),
+      filler(3),
+    ),
+  );
+
+  const shout = lines.find((l) => l.text === 'WE LOVE IT!');
+  assert.equal(shout.speaker, 'ALL', 'the shout was not attributed to the company');
+  assert.ok(!lines.some((l) => l.type === 'dialogue' && l.text.trim() === 'ALL'));
+});
+
+test('a cue read as speech is handed back to whoever was being cued', () => {
+  const many = [];
+  for (let i = 0; i < 4; i++) {
+    many.push(cue('MOLLY', 300 + i * 80), speech(`Molly says something, number ${i}.`, 334 + i * 80));
+    many.push(cue('TED', 340 + i * 80), speech(`Ted answers her, number ${i}.`, 374 + i * 80));
+  }
+  const { lines } = parseScript(
+    pages(filler(1), filler(2, many), filler(3, [
+      cue('MOLLY', 306),
+      speech('Then help me get the trunk out of the cabin!', 340),
+      speech('TED', 371, { x1: 1327, confs: [70] }),
+      speech('Sorry, not our issue at all today.', 371),
+    ])),
+  );
+
+  const sorry = lines.find((l) => /Sorry, not our issue/.test(l.text));
+  assert.equal(sorry.speaker, 'TED', 'the line stayed with the wrong character');
+  assert.ok(!lines.some((l) => l.type === 'dialogue' && l.text.trim() === 'TED'));
+});
+
+test('a one-letter misread of a name does not become a new character', () => {
+  const many = [];
+  for (let i = 0; i < 6; i++) {
+    many.push(cue('ALL', 300 + i * 80), speech(`Everyone speaks together, line ${i}.`, 334 + i * 80));
+  }
+  const { characters } = parseScript(
+    pages(filler(1), filler(2, many), filler(3, [
+      line('ALE', 690, 306), speech('Ready when you are, every one of us.', 329, 340),
+      line('ALT', 690, 400), speech('Set and steady, the lot of us.', 329, 434),
+    ])),
+  );
+
+  const names = characters.map((c) => c.name);
+  assert.ok(!names.includes('ALE') && !names.includes('ALT'), `scanner slips became parts: ${names}`);
+  assert.ok(names.includes('ALL'));
+});

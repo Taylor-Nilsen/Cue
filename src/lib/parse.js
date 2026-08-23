@@ -131,6 +131,14 @@ function isLitter(line) {
   const words = line.words ?? [];
   if (!words.length) return true;
   const confidence = words.reduce((sum, w) => sum + (w.conf ?? 100), 0) / words.length;
+
+  // A whole line of one or two characters is usually the margin seam rather
+  // than anything anybody says — "i" and "3" were being handed to a voice and
+  // read out loud. But "No." and "Oh." are real lines, so let OCR's own
+  // confidence be the judge instead of a list of words.
+  const bare = text.replace(/[^A-Za-z0-9]/g, '');
+  if (bare.length <= 2 && confidence < 75) return true;
+
   if (confidence >= 45) return false;
 
   // Low confidence on its own isn't enough — a smudged character name is still
@@ -213,23 +221,42 @@ function headKey(line) {
   return `${line.yFrac < 0.5 ? 'top' : 'bottom'}|${letters.slice(0, 18)}`;
 }
 
+/** A line of a contents page: dot leaders, or a title trailing a page number. */
+const CONTENTS_LINE = /\.{4,}|\s\.\s\.\s|(?:^|\s)#?\d{1,3}\s*$/;
+
 /** Set aside the cover page, the cast list, and whatever's stapled to the back. */
 function trimMatter(pages) {
   const flat = [];
   for (const page of pages) for (const line of page.lines) flat.push({ ...line, page: page.number });
 
-  // A scene heading is the strongest possible "the script starts here"; only
-  // fall back to the first character cue when the script has no headings at all.
-  let start = flat.findIndex((l) => SCENE_RE.test(l.text));
-  if (start < 0) {
-    for (let i = 0; i < flat.length; i++) {
-      if (looksLikeCue(flat[i], flat, i)) {
-        start = firstOfPage(flat, i);
+  // The script starts at the first scene heading that is actually followed by
+  // someone speaking.
+  //
+  // Looking only for a scene heading isn't enough: a table of contents is a
+  // list of scene headings, so "ACT ONE" in the contents won reads over the
+  // real "PROLOGUE" thirty lines later. Everything above got kept, and the
+  // rehearsal opened with the narrator reciting production notes and a page
+  // of dot leaders before anybody said a word.
+  // Find where someone first genuinely speaks, then back up to the heading
+  // that introduces them.
+  //
+  // Going the other way — first scene heading with speech somewhere after it —
+  // fails on a contents page, because a contents page is a list of scene
+  // headings and the earliest of them still has the real script somewhere
+  // below. Anchoring on the speech and reaching back for its heading lands on
+  // the scene that actually opens the play.
+  let start = 0;
+  const firstCue = findFirstScriptPage(flat) ?? findFirstExchange(flat);
+  if (firstCue >= 0) {
+    start = firstOfPage(flat, firstCue);
+    for (let j = firstCue; j >= Math.max(0, firstCue - HEADING_REACH); j--) {
+      if (flat[j].page !== flat[firstCue].page) break;
+      if (isHeading(flat[j].text)) {
+        start = j;
         break;
       }
     }
   }
-  if (start < 0) start = 0;
 
   let end = flat.length;
   for (let i = flat.length - 1; i > start; i--) {
@@ -239,6 +266,99 @@ function trimMatter(pages) {
     }
   }
   return flat.slice(start, end);
+}
+
+/** How far above the first spoken line to look for the scene it belongs to. */
+const HEADING_REACH = 12;
+
+/**
+ * A page is part of the script when people are speaking on it, several times
+ * over. That one measurement separates the play from everything bound in
+ * front of it far more sharply than any amount of squinting at individual
+ * lines: on a 176-page scan the front matter — cast list, casting note,
+ * contents — peaked at four cue-shaped lines a page and 8% of the page, while
+ * every page of the actual play ran 5 to 15 cues and 17% to 43%.
+ *
+ * Line-by-line rules kept getting this wrong in both directions. A cast page
+ * reading "THE ORPHANS" over a paragraph about each orphan has the exact
+ * shape of someone speaking, and a contents page is a column of scene
+ * headings. Neither can keep it up for a whole page.
+ */
+const SCRIPT_PAGE_CUES = 5;
+const SCRIPT_PAGE_RATIO = 0.15;
+
+/** @returns the index of the first cue on the first page that reads as script. */
+function findFirstScriptPage(flat) {
+  let pageStart = 0;
+  for (let i = 0; i <= flat.length; i++) {
+    if (i < flat.length && flat[i].page === flat[pageStart].page) continue;
+
+    const cues = [];
+    for (let j = pageStart; j < i; j++) if (isGenuineCue(flat, j)) cues.push(j);
+    const lines = i - pageStart;
+    if (cues.length >= SCRIPT_PAGE_CUES && cues.length / lines >= SCRIPT_PAGE_RATIO) {
+      return cues[0];
+    }
+    pageStart = i;
+  }
+  return null;
+}
+
+/** How far to look for company before believing a cue is really a cue. */
+const EXCHANGE_REACH = 25;
+const EXCHANGE_CUES = 3;
+
+/**
+ * The first cue that has company.
+ *
+ * A cue on its own proves nothing. A cover page reading "HAMLET" over "a
+ * tragedy in five acts" has exactly the shape of a character speaking a line,
+ * and a cast page — "THE ORPHANS", then a paragraph about each of them — has
+ * it two or three times over. What front matter never does is keep it up:
+ * a script is speakers taking turns, several to a page.
+ *
+ * So the script begins at the first cue with at least two more below it on the
+ * same page. Requiring the company to be on the same page matters — otherwise
+ * a lone cue-shaped title on a cover is vouched for by the real script
+ * starting overleaf.
+ */
+function findFirstExchange(flat) {
+  for (let i = 0; i < flat.length; i++) {
+    if (!isGenuineCue(flat, i)) continue;
+    let found = 1;
+    for (let j = i + 1; j < Math.min(flat.length, i + 1 + EXCHANGE_REACH); j++) {
+      if (flat[j].page !== flat[i].page) break;
+      if (isGenuineCue(flat, j)) found++;
+      if (found >= EXCHANGE_CUES) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * A heading is short. "Act One doubles as Hawking Clam (neglected by Fighting
+ * Prawn) in Act Two." is a sentence from the production notes that happens to
+ * start with the word Act.
+ */
+function isHeading(raw) {
+  const text = raw.trim();
+  return SCENE_RE.test(text) && text.length < 80 && !CONTENTS_LINE.test(text);
+}
+
+/**
+ * A cue with something a person actually says underneath it.
+ *
+ * A contents page is a column of short capitalised titles and plenty of them
+ * pass for a cue on their own — what they never have is a line of speech below.
+ */
+function isGenuineCue(flat, index) {
+  const line = flat[index];
+  if (CONTENTS_LINE.test(line.text)) return false;
+  if (!looksLikeCue(line, flat, index)) return false;
+
+  const spoken = flat[index + 1]?.text.trim() ?? '';
+  if (!spoken || CONTENTS_LINE.test(spoken)) return false;
+  return /[a-z]{3}/.test(spoken);
 }
 
 // Back up to the top of the page the script actually starts on.
@@ -353,6 +473,7 @@ function classify(flat) {
   }
 
   foldScannedVariants(out);
+  reclaimSwallowedCues(out);
   return out.map((l, i) => ({ ...l, id: i, wrapped: undefined, open: undefined }));
 }
 
@@ -372,8 +493,8 @@ function ranToMargin(line, rightMargin) {
  * must not reach down and swallow the cue on the next line.
  */
 function bracketBalance(text) {
-  const open = (text.match(/[([]/g) || []).length;
-  const close = (text.match(/[)\]]/g) || []).length;
+  const open = (text.match(/[([{]/g) || []).length;
+  const close = (text.match(/[)\]}]/g) || []).length;
   return open - close;
 }
 
@@ -399,9 +520,14 @@ function toWords(line) {
  * Stage direction, without leaning on font styling — a scan carries no italics
  * to read, so this goes on shape and punctuation instead.
  */
+const OPEN_BRACKET = /^[([{<]/;
+const CLOSE_BRACKET = /[)\]}>]$/;
+
 function isStageDirection(line, text) {
-  if (/^[([].*[)\]]$/.test(text)) return true;
-  if (/^[([]/.test(text)) return true;
+  // A scan turns "(" into "{" or "<" often enough that matching only the real
+  // thing leaves stage direction to be read out as somebody's line.
+  if (OPEN_BRACKET.test(text) && CLOSE_BRACKET.test(text)) return true;
+  if (OPEN_BRACKET.test(text)) return true;
   const centered = line.indent > 0.25 && line.right < 0.8 && Math.abs(line.indent - (1 - line.right)) < 0.09;
   if (centered && STAGE_VERBS.test(text) && !isNameShaped(text)) return true;
   if (/^(Enter|Exeunt|Exit|Re-enter)\b/.test(text) && text.length < 90) return true;
@@ -420,7 +546,12 @@ function looksLikeCue(line, flat, index) {
   const next = flat[index + 1];
   if (!next) return false;
   const nextText = next.text.trim();
-  if (!nextText || isNameShaped(nextText)) return false;
+  if (!nextText) return false;
+  // Two name-shaped lines in a row usually means a cast list rather than a
+  // cue. But a cue is indented and its dialogue is not, so when the next line
+  // sits clearly further left it's a line being spoken however loudly it's
+  // set — "ALL" over "WE LOVE IT!" is a cue and a shout, not two names.
+  if (isNameShaped(nextText) && next.indent > line.indent - 0.12) return false;
   // A cue's dialogue starts on the very next line of the page.
   if (next.page !== line.page && index + 1 < flat.length) return false;
 
@@ -436,10 +567,13 @@ function looksLikeCue(line, flat, index) {
 function isNameShaped(raw) {
   const text = raw.trim().replace(/\((?:[^)]*)\)/g, '').replace(/[.:]\s*$/, '').trim();
   if (!text || text.length > 34) return false;
-  if (text.split(/\s+/).length > 4) return false;
+  const words = text.split(/\s+/);
+  if (words.length > 4) return false;
   // Sung lyrics are set in capitals too, and a page of them will happily
-  // masquerade as a cast list. A cue never trails off mid-clause.
-  if (/[,;\u2013\u2014-]$/.test(text)) return false;
+  // masquerade as a cast list. A cue never trails off mid-clause — but only
+  // apply that to a phrase. A stray mark after a one- or two-word name is the
+  // margin seam, not a lyric, and rejecting "MOLLY ;" cost her the line.
+  if (words.length >= 3 && /[,;\u2013\u2014-]$/.test(text)) return false;
   const letters = text.replace(/[^A-Za-z]/g, '');
   if (letters.length < 2) return false;
   const upper = text.replace(/[^A-Z]/g, '').length;
@@ -485,7 +619,7 @@ function isMargin(word) {
 }
 
 function stripWrappers(text) {
-  return text.replace(/^\s*[([]\s*/, '').replace(/\s*[)\]]\s*$/, '').trim();
+  return text.replace(/^\s*[([{<]\s*/, '').replace(/\s*[)\]}>]\s*$/, '').trim();
 }
 
 /**
@@ -520,7 +654,9 @@ function foldScannedVariants(lines) {
   const folded = new Map();
   for (const [name, n] of counts) {
     if (n > RARE_LINES || established.includes(name)) continue;
-    const parent = established.find((known) => isScrapOf(name, known));
+    const parent =
+      established.find((known) => isScrapOf(name, known)) ??
+      established.find((known) => isMisreadOf(name, known));
     if (parent) folded.set(name, parent);
   }
   if (!folded.size) return;
@@ -531,11 +667,69 @@ function foldScannedVariants(lines) {
   }
 }
 
+/**
+ * One letter out. OCR read "ALL" as "ALE" and "ALT" on the last page of the
+ * script, which handed the company's final shout to two characters who don't
+ * exist. Only applied between a name with a real part and a near-namesake
+ * holding a line or two — at that ratio the scanner slipped, rather than the
+ * playwright having written both.
+ */
+function isMisreadOf(name, known) {
+  if (name.length !== known.length || known.length < 3) return false;
+  let differences = 0;
+  for (let i = 0; i < name.length; i++) {
+    if (name[i] !== known[i] && ++differences > 1) return false;
+  }
+  return differences === 1;
+}
+
 function isScrapOf(name, known) {
   if (name === known || !name.startsWith(known)) return false;
   const rest = name.slice(known.length);
   if (/\d/.test(rest)) return false; // "TENOR 2" is not a scrap of "TENOR"
   return rest.replace(/[^A-Za-z]/g, '').length <= SCRAP_LETTERS;
+}
+
+/**
+ * A line of dialogue that is nothing but another character's name is a cue
+ * that got read as speech — so the wrong actor says the right name, and then
+ * keeps saying everything that belonged to them.
+ *
+ * Once the cast is known this is unambiguous, which it wasn't while the lines
+ * were still being classified one at a time. Anything the line-by-line rules
+ * missed gets picked up here.
+ */
+function reclaimSwallowedCues(lines) {
+  const spoken = new Map();
+  for (const line of lines) {
+    if (line.type === 'dialogue' && line.speaker) {
+      spoken.set(line.speaker, (spoken.get(line.speaker) ?? 0) + 1);
+    }
+  }
+  // Only names with a real part to them; a one-line ghost proves nothing.
+  const cast = new Set([...spoken.entries()].filter(([, n]) => n >= 3).map(([name]) => name));
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.type !== 'dialogue' || !line.speaker) continue;
+
+    const bare = line.text.trim().replace(/[.:;,|]+$/, '').trim();
+    if (bare === line.speaker || !cast.has(bare)) continue;
+
+    // Hand the following run of lines to whoever was actually being cued.
+    const wrong = line.speaker;
+    line.type = 'cue-removed';
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].type === 'scene') break;
+      if (lines[j].type !== 'dialogue') continue;
+      if (lines[j].speaker !== wrong) break;
+      lines[j].speaker = bare;
+    }
+  }
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].type === 'cue-removed') lines.splice(i, 1);
+  }
 }
 
 /* -------------------------------------------------------------- assembly */
