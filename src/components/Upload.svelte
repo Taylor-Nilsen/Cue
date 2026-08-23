@@ -1,15 +1,21 @@
 <script>
   import { onMount } from 'svelte';
-  import { stage, setProgress, clearProgress } from '../lib/stage.js';
+  import { stage, setProgress, clearProgress, uploadError } from '../lib/stage.js';
   import { get } from 'svelte/store';
   import { session, startFromScript, startFromCueFile } from '../lib/session.js';
   import { looksLikeCueFile, parse as parseCueFile } from '../lib/cuefile.js';
   import { loadDraft, clearDraft } from '../lib/autosave.js';
   import { unlockAudio } from '../lib/tts.js';
 
-  let dragging = false;
-  let error = '';
   let draft = null;
+
+  // dragenter/dragleave fire for every child element the pointer crosses, so
+  // a plain boolean flickers. Counting them doesn't.
+  let dragDepth = 0;
+  let overBox = false;
+  // "A file is somewhere over the window" and "a file is over the box" are
+  // different things to say, now that the box is the only place that takes one.
+  $: armed = dragDepth > 0;
 
   onMount(async () => {
     draft = await loadDraft();
@@ -17,7 +23,7 @@
 
   async function handle(file) {
     if (!file) return;
-    error = '';
+    uploadError.set('');
     // First touch of the session — get the audio context alive while a finger
     // is definitely on the glass, long before anyone presses play.
     unlockAudio();
@@ -33,7 +39,7 @@
       }
 
       if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) {
-        error = 'Cue reads PDFs, or a .cue.md file you saved here before.';
+        uploadError.set('Cue reads PDFs, or a .cue.md file you saved here before.');
         return;
       }
 
@@ -50,7 +56,9 @@
       if (!parsed.characters.length) {
         clearProgress();
         stage.set('upload');
-        error = "Cue couldn't find any dialogue in that one. If it's a scan, a straighter or sharper copy usually does it.";
+        uploadError.set(
+          "Cue couldn't find any dialogue in that one. If it's a scan, a straighter or sharper copy usually does it.",
+        );
         return;
       }
 
@@ -58,18 +66,61 @@
       clearProgress();
       stage.set('review');
     } catch (err) {
-      console.error(err);
+      console.error('[cue] ingest failed', err);
       clearProgress();
       stage.set('upload');
-      error = err?.message?.includes('Cue file')
-        ? err.message
-        : "Something went wrong reading that file. If it's a scan, try a sharper copy.";
+      uploadError.set(describe(err));
     }
   }
 
   function onDrop(event) {
-    dragging = false;
-    handle(event.dataTransfer?.files?.[0]);
+    event.preventDefault();
+    dragDepth = 0;
+    overBox = false;
+    const file = event.dataTransfer?.files?.[0];
+    if (file) handle(file);
+  }
+
+  function onDragEnter(event) {
+    if (event.dataTransfer?.types?.includes('Files')) dragDepth++;
+  }
+
+  function onDragLeave() {
+    dragDepth = Math.max(0, dragDepth - 1);
+  }
+
+  /**
+   * The box is the only thing that accepts a script — but a file dropped just
+   * outside it must not make the browser navigate away to the PDF, which looks
+   * exactly like the app reloading and losing everything. Swallow the stray
+   * drop and point at the box instead.
+   */
+  function onStrayDragOver(event) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+  }
+
+  function onStrayDrop(event) {
+    event.preventDefault();
+    dragDepth = 0;
+    overBox = false;
+    if (event.dataTransfer?.files?.length) {
+      uploadError.set('Nearly — drop it inside the dashed box.');
+    }
+  }
+
+  /**
+   * Say what went wrong in words. A worker that fails to start throws an
+   * ErrorEvent rather than an Error, so `err.message` is undefined and the
+   * naive version of this produced no message at all.
+   */
+  function describe(err) {
+    const detail = err?.message ?? err?.error?.message ?? String(err?.type ?? err ?? '');
+    if (detail.includes('Cue file')) return detail;
+    if (/importScripts|Worker|wasm/i.test(detail)) {
+      return "Cue couldn't start its reader. A hard refresh usually sorts it — and if it doesn't, the browser may be blocking WebAssembly.";
+    }
+    return "Something went wrong reading that file. If it's a scan, try a sharper copy.";
   }
 
   async function resume() {
@@ -103,28 +154,46 @@
   </div>
 {/if}
 
-<div
+<!-- The window only ever swallows a stray drop; the box below is what
+     actually takes a script. -->
+<svelte:window
+  on:dragenter={onDragEnter}
+  on:dragleave={onDragLeave}
+  on:dragover={onStrayDragOver}
+  on:drop={onStrayDrop}
+/>
+
+<!-- A label, not a div with a click handler: the file picker opens natively,
+     the keyboard works for free, and the input's own click can't bubble back
+     out and re-open the dialog. -->
+<label
   class="drop"
-  class:dragging
-  role="button"
-  tabindex="0"
-  on:dragover|preventDefault={() => (dragging = true)}
-  on:dragleave={() => (dragging = false)}
-  on:drop|preventDefault={onDrop}
-  on:click={() => document.getElementById('cue-file').click()}
-  on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && document.getElementById('cue-file').click()}
+  class:armed
+  class:over={overBox}
+  for="cue-file"
+  on:dragover|preventDefault|stopPropagation={(e) => {
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    overBox = true;
+  }}
+  on:dragleave={() => (overBox = false)}
+  on:drop|stopPropagation={onDrop}
 >
   <svg viewBox="0 0 24 24" fill="none" stroke="var(--sky)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
   </svg>
-  <h3>Drop your script here</h3>
+  <h3>{overBox ? 'Let go' : 'Drop your script here'}</h3>
   <p class="muted">A PDF — even a crooked photocopy — or a <code>.cue.md</code> file you saved before.</p>
   <span class="btn sky">Choose a file</span>
-  <input id="cue-file" type="file" accept=".pdf,.md,.txt,application/pdf,text/markdown" on:change={(e) => handle(e.currentTarget.files[0])} />
-</div>
+  <input
+    id="cue-file"
+    type="file"
+    accept=".pdf,.md,.txt,application/pdf,text/markdown"
+    on:change={(e) => handle(e.currentTarget.files[0])}
+  />
+</label>
 
-{#if error}
-  <p class="error" role="alert">{error}</p>
+{#if $uploadError}
+  <p class="error" role="alert">{$uploadError}</p>
 {/if}
 
 <div class="two-ways">
@@ -154,8 +223,19 @@
     cursor: pointer;
     transition: border-color 0.15s ease, transform 0.15s ease;
   }
-  .drop:hover, .drop:focus-visible { border-color: var(--sky); }
-  .drop.dragging { border-color: var(--coral); transform: scale(1.01); }
+  .drop { display: block; }
+  .drop:hover, .drop:focus-within { border-color: var(--sky); }
+  /* A file is over the window somewhere: show where it has to land. */
+  .drop.armed {
+    border-color: var(--sky);
+    background: color-mix(in srgb, var(--sky) 7%, var(--paper-raised));
+  }
+  /* It's over the box: let go. */
+  .drop.over {
+    border-color: var(--coral);
+    background: color-mix(in srgb, var(--coral) 9%, var(--paper-raised));
+    transform: scale(1.01);
+  }
   .drop svg { width: 42px; height: 42px; }
   .drop h3 { margin: 10px 0 4px; font-size: 1.35rem; }
   .drop p { margin: 0 auto 18px; max-width: 42ch; font-size: 0.95rem; }
@@ -166,7 +246,14 @@
     padding: 1px 5px;
     border-radius: 5px;
   }
-  input[type='file'] { display: none; }
+  /* Hidden but still focusable, so tabbing to the drop zone works. */
+  input[type='file'] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
 
   .error {
     margin: 16px auto 0;
