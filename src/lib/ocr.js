@@ -27,7 +27,11 @@ export function ocrSession() {
       workerBlobURL: false,
       corePath: TESS,
       langPath: TESS,
-      cacheMethod: 'refresh',
+      // 'write', not 'refresh'. Refresh re-downloads the 11 MB of language
+      // data on every single visit and overwrites the cache with it, which
+      // both wastes a rehearsal room's worth of tethering and quietly breaks
+      // the promise that Cue works offline after the first read.
+      cacheMethod: 'write',
     }).then(async (worker) => {
       await worker.setParameters({
         // A script page is a single column of text with generous margins.
