@@ -1,6 +1,7 @@
 import { openPdf, readTextLayer, textLayerIsUsable, renderPage } from './pdf.js';
 import { cleanPage } from './preprocess.js';
 import { recognizePage, disposeOcr } from './ocr.js';
+import { keepAwake, releaseWake } from './wakelock.js';
 
 /**
  * Turn an uploaded PDF into positioned lines of text, one bundle per page.
@@ -15,6 +16,9 @@ import { recognizePage, disposeOcr } from './ocr.js';
  */
 export async function ingestPdf(file, onProgress = () => {}) {
   onProgress({ message: 'Opening your script…', current: 0, total: 0 });
+  // Reading a long scan takes minutes. Letting the screen lock halfway
+  // through is a good way to come back to a job that never finished.
+  keepAwake();
   const pdf = await openPdf(file);
   const total = pdf.numPages;
 
@@ -50,6 +54,7 @@ export async function ingestPdf(file, onProgress = () => {}) {
 
   await pdf.destroy();
   if (scanned) await disposeOcr();
+  releaseWake();
   return { pages, scanned };
 }
 

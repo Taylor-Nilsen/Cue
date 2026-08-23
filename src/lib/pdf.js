@@ -50,7 +50,17 @@ export function textLayerIsUsable(result) {
   return letters > 120 && words.length > 25;
 }
 
-/** Render one page to a canvas for OCR. */
+/**
+ * Render one page to a canvas for OCR.
+ *
+ * `intent: 'print'` matters more than it looks. pdf.js drives its render loop
+ * with requestAnimationFrame for the default display intent, and rAF stops
+ * firing the moment the tab is hidden — so putting your phone down or
+ * switching apps midway through an 84-page scan freezes the read where it
+ * stands, with the progress bar still up and nothing to say why. Print intent
+ * schedules with timers instead, which keeps working in the background. We
+ * aren't displaying these pages anyway; we're rasterizing them to be read.
+ */
 export async function renderPage(page, scale = RASTER_SCALE) {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
@@ -59,7 +69,7 @@ export async function renderPage(page, scale = RASTER_SCALE) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: ctx, viewport }).promise;
+  await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
   return canvas;
 }
 

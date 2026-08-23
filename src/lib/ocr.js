@@ -7,8 +7,16 @@ import { createWorker, PSM } from 'tesseract.js';
  * network at all.
  */
 
-const BASE = import.meta.env.BASE_URL;
-const TESS = `${BASE}tess/`;
+/**
+ * These have to be absolute URLs, not relative ones.
+ *
+ * tesseract.js fetches its worker and re-serves it as a blob: URL, and inside
+ * that worker `importScripts('./tess/worker.min.js')` resolves against the
+ * blob rather than the page — which fails with "The URL is invalid" and takes
+ * the whole ingest down with it. Resolving against document.baseURI up front
+ * gives an absolute URL that still honours a subfolder deployment.
+ */
+const TESS = new URL('tess/', document.baseURI).href;
 
 let sessionPromise = null;
 
@@ -16,6 +24,7 @@ export function ocrSession() {
   if (!sessionPromise) {
     sessionPromise = createWorker('eng', 1, {
       workerPath: `${TESS}worker.min.js`,
+      workerBlobURL: false,
       corePath: TESS,
       langPath: TESS,
       cacheMethod: 'refresh',
