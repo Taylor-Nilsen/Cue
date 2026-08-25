@@ -1,7 +1,9 @@
 # Build the site and publish it to cue.taylornilsen.com.
 #
-# GitHub does the building, which means no deploy credentials live on anyone's
-# laptop: push to main and the site follows a couple of minutes later.
+# Publishes by pushing the build to the gh-pages branch, which is the source
+# Pages is actually reading. The alternative — the deploy-pages action — needs
+# the repository's Pages source set to "GitHub Actions", and switching that is
+# a settings change nobody should have to make to get a deploy working.
 name: Deploy
 
 on:
@@ -10,9 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 # Never let two deploys race; the newer one wins.
 concurrency:
@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,20 +34,19 @@ jobs:
       # data, so the built site serves its own reader rather than a CDN's.
       - run: npm ci
 
+      # A build that fails its tests never reaches the domain.
       - run: npm test
 
       - run: npm run build
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          # The branch is a mirror of the current build, not a history — every
+          # deploy replaces it, so 50 MB of wasm doesn't accumulate forever.
+          force_orphan: true
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com
+          commit_message: "Deploy ${{ github.sha }}"
