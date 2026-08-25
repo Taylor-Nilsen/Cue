@@ -10,6 +10,27 @@ import { splitSpeakers, joinSpeakers, speakersOf } from './speakers.js';
  * screen instead of being silently guessed.
  */
 
+/**
+ * Where this script puts its character cues.
+ *
+ * Scripts are typeset consistently: every cue sits in the same place on the
+ * page, whether that's centred over the dialogue or flush with a margin.
+ * Measured across the test scan, real cues centre at 0.566 of the page width
+ * with a spread of ±0.03 — while the lyric lines that had been passing for
+ * cues ("HOO-WEE!", "SWIM ON, SWIM ON", "THEY'VE GONE TOO FAR.") sit out at
+ * 0.40 with the rest of the dialogue.
+ *
+ * Learning the column from the script and holding candidates to it is worth
+ * more than any amount of reasoning about the words, because a shouted line
+ * and a character's name are the same shape — but they are never in the same
+ * place.
+ *
+ * Held here rather than threaded through because the cue test is asked from
+ * four places, including while deciding where the script starts.
+ * @type {{axis: 'indent'|'centre', at: number, tolerance: number}|null}
+ */
+let cueColumn = null;
+
 /** Below this, a word gets underlined for a human glance. */
 export const LOW_CONFIDENCE = 72;
 
@@ -43,6 +64,11 @@ export function parseScript(pages, fallbackTitle = 'Untitled script') {
   // the other.
   const title = findTitle(withMeta, fallbackTitle);
   stripRunningHeads(withMeta);
+
+  const everything = [];
+  for (const page of withMeta) for (const line of page.lines) everything.push({ ...line, page: page.number });
+  cueColumn = findCueColumn(everything);
+
   const body = trimMatter(withMeta);
   const lines = classify(body);
   return {
@@ -671,7 +697,17 @@ function classify(flat) {
     const prev = out[out.length - 1];
     // Only ever join a line to the one above it on the same page — a footer
     // and the next page's header must never fuse onto someone's speech.
-    if (prev && prev.type === 'dialogue' && prev.speaker === speaker && prev.wrapped && prev.page === line.page) {
+    // A wrapped line runs on into the next one — but never into a name. Even a
+    // cue that failed the column test is a cue, not the tail of a sentence,
+    // and swallowing it here leaves nothing for the reclaim pass to rescue.
+    if (
+      prev &&
+      prev.type === 'dialogue' &&
+      prev.speaker === speaker &&
+      prev.wrapped &&
+      prev.page === line.page &&
+      !isNameShaped(text)
+    ) {
       // The previous line ran to the margin, so this is the rest of it.
       prev.text = `${prev.text} ${text}`.replace(/\s+/g, ' ');
       prev.words = [...prev.words, ...toWords(line)];
@@ -679,7 +715,11 @@ function classify(flat) {
       continue;
     }
 
-    out.push(wrapAware(make(speaker ? 'dialogue' : 'stage', speaker, text, line), line, rightMargin));
+    const entry = wrapAware(make(speaker ? 'dialogue' : 'stage', speaker, text, line), line, rightMargin);
+    // A line that is just a name is a cue the column test turned down, not the
+    // start of a sentence — so nothing runs on from it either.
+    if (isNameShaped(text)) entry.wrapped = false;
+    out.push(entry);
   }
 
   foldScannedVariants(out);
@@ -747,6 +787,100 @@ function isStageDirection(line, text) {
 }
 
 /**
+ * Work out where this script prints its cues.
+ *
+ * Two ways a script can be consistent: cues centred over the dialogue, or cues
+ * set at a fixed indent. Which one is in use shows in the numbers — measure
+ * both across the obvious cues and keep whichever is tighter, since the one
+ * that isn't the convention varies with the length of the name.
+ *
+ * If neither is tight, the script has no column worth holding anything to and
+ * this stays out of the way.
+ */
+const COLUMN_SAMPLE = 12;
+const COLUMN_BIN = 0.02;
+const COLUMN_MIN_SHARE = 0.5;
+const COLUMN_MIN_TOLERANCE = 0.05;
+
+function findCueColumn(flat) {
+  const indents = [];
+  const centres = [];
+
+  for (let i = 0; i < flat.length; i++) {
+    const line = flat[i];
+    const text = line.text.trim();
+    if (!isNameShaped(text)) continue;
+
+    // Only learn from cues there's no argument about: a name with a proper
+    // line of speech under it.
+    const next = flat[i + 1];
+    if (!next || next.page !== line.page) continue;
+    const spoken = next.text.trim();
+    if (spoken.split(/\s+/).length < 4 || !/[a-z]{3}/.test(spoken)) continue;
+    if (isNameShaped(spoken)) continue;
+
+    indents.push(line.indent);
+    centres.push((line.indent + line.right) / 2);
+  }
+  if (indents.length < COLUMN_SAMPLE) return null;
+
+  const byIndent = clusterOf(indents);
+  const byCentre = clusterOf(centres);
+  const best = (byCentre?.share ?? 0) > (byIndent?.share ?? 0) ? byCentre : byIndent;
+  if (!best || best.share < COLUMN_MIN_SHARE) return null;
+
+  return {
+    axis: best === byCentre ? 'centre' : 'indent',
+    at: best.at,
+    tolerance: Math.max(COLUMN_MIN_TOLERANCE, best.width),
+  };
+}
+
+/**
+ * The densest run of values, found by peak rather than by percentile.
+ *
+ * Percentiles are no good here: the lines this is meant to weed out are in the
+ * sample being measured, so a page of lyrics drags the spread wide enough that
+ * the column looks like no column at all, and the test switches itself off
+ * exactly when it's needed. A peak doesn't care what's out in the tails.
+ */
+function clusterOf(values) {
+  if (!values.length) return null;
+  const bins = new Map();
+  for (const v of values) {
+    const key = Math.round(v / COLUMN_BIN);
+    bins.set(key, (bins.get(key) ?? 0) + 1);
+  }
+
+  let peak = null;
+  for (const [key, count] of bins) if (!peak || count > peak.count) peak = { key, count };
+
+  // Grow out from the peak while the neighbouring bins still look like part of
+  // the same column rather than the start of the page's other furniture.
+  const floor = Math.max(1, peak.count * 0.25);
+  let lo = peak.key;
+  let hi = peak.key;
+  while ((bins.get(lo - 1) ?? 0) >= floor) lo--;
+  while ((bins.get(hi + 1) ?? 0) >= floor) hi++;
+
+  let inside = 0;
+  let sum = 0;
+  for (const v of values) {
+    const key = Math.round(v / COLUMN_BIN);
+    if (key < lo || key > hi) continue;
+    inside++;
+    sum += v;
+  }
+  return { at: sum / inside, width: ((hi - lo + 1) * COLUMN_BIN) / 2, share: inside / values.length };
+}
+
+function inCueColumn(line) {
+  if (!cueColumn) return true;
+  const where = cueColumn.axis === 'indent' ? line.indent : (line.indent + line.right) / 2;
+  return Math.abs(where - cueColumn.at) <= cueColumn.tolerance;
+}
+
+/**
  * A character cue is a short, capitalised line that sits on its own and is
  * immediately followed by something dialogue-shaped. Each of those is weak on
  * its own; together they're reliable.
@@ -754,6 +888,9 @@ function isStageDirection(line, text) {
 function looksLikeCue(line, flat, index) {
   const text = line.text.trim().replace(/[.:]\s*$/, '');
   if (!isNameShaped(text)) return false;
+  // A shouted line of lyric is the same shape as a name, but it is never in
+  // the same place on the page.
+  if (!inCueColumn(line)) return false;
 
   const next = flat[index + 1];
   if (!next) return false;
@@ -849,6 +986,13 @@ function stripWrappers(text) {
 const ESTABLISHED_LINES = 5;
 const RARE_LINES = 2;
 const SCRAP_LETTERS = 3;
+/**
+ * A ghost can be commoner than "rare" and still obviously a ghost: "ASTER i"
+ * turned up three times against Aster's hundred and twenty-nine. Anything
+ * holding under a tenth of its namesake's part is the scanner, not the
+ * playwright.
+ */
+const GHOST_SHARE = 0.1;
 
 function foldScannedVariants(lines) {
   const counts = new Map();
@@ -860,16 +1004,17 @@ function foldScannedVariants(lines) {
 
   const established = [...counts.entries()]
     .filter(([, n]) => n >= ESTABLISHED_LINES)
-    .map(([name]) => name)
-    .sort((a, b) => b.length - a.length); // prefer the longest match
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length) // the biggest part wins a tie
+    .map(([name]) => name);
 
   const folded = new Map();
   for (const [name, n] of counts) {
-    if (n > RARE_LINES || established.includes(name)) continue;
+    if (established.includes(name)) continue;
     const parent =
       established.find((known) => isScrapOf(name, known)) ??
       established.find((known) => isMisreadOf(name, known));
-    if (parent) folded.set(name, parent);
+    if (!parent) continue;
+    if (n <= RARE_LINES || n < counts.get(parent) * GHOST_SHARE) folded.set(name, parent);
   }
   if (!folded.size) return;
 

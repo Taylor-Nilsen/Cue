@@ -671,3 +671,99 @@ test('a two-page spread becomes two pages, read left then right', () => {
   // Left page first: Molly's line comes before Slank's.
   assert.ok(said.indexOf(molly) < said.indexOf(slank), 'the right page was read first');
 });
+
+test('a shouted lyric at the dialogue margin is not a character', () => {
+  // Measured on the real scan: cues centre at 0.566 of the page with a spread
+  // of ±0.03, while the lyric lines that had been passing for cues sit out at
+  // 0.40 with the rest of the dialogue. Same shape, different place.
+  const scene = (n) => {
+    const out = [];
+    let y = 200;
+    for (const who of ['MOLLY', 'STACHE', 'SMEE', 'ALF', 'TED']) {
+      out.push(cue(who, y), speech(`${who} says a thing here, number ${n}.`, 315, y + 40, { x1: 1000 }));
+      y += 90;
+    }
+    return out;
+  };
+  // Each lyric is followed by an ordinary line, which is exactly what makes it
+  // look like a cue: short, capitalised, with speech underneath. The only
+  // thing separating it from a real cue is where it sits.
+  const songPage = [
+    cue('ALL', 200),
+    speech('We sing it out together now, the lot of us.', 315, 240, { x1: 1000 }),
+    line('SWIM ON, SWIM ON', 315, 300, { x1: 560 }),
+    speech('and we sail on through the night together.', 315, 340, { x1: 1000 }),
+    line('HOO-WEE!', 315, 380, { x1: 430 }),
+    speech('the boys all cried out at once, delighted.', 315, 420, { x1: 1000 }),
+    line('THANK YOU, SMEE', 315, 460, { x1: 540 }),
+    speech('he said, with a bow to the little man.', 315, 500, { x1: 1000 }),
+    line('BEFORE YOUR EYES', 315, 540, { x1: 550 }),
+    speech('the whole ship went down into the water.', 315, 580, { x1: 1000 }),
+    cue('MOLLY', 640),
+    speech('And that was the end of the song, thank goodness.', 315, 680, { x1: 1000 }),
+  ];
+
+  const { characters } = parseScript(pages(scene(1), scene(2), songPage, scene(3)));
+  const names = characters.map((c) => c.name);
+
+  for (const lyric of ['SWIM ON, SWIM ON', 'HOO-WEE!', 'THANK YOU, SMEE', 'BEFORE YOUR EYES']) {
+    assert.ok(!names.includes(lyric), `a lyric was cast as a character: ${lyric}`);
+  }
+  for (const real of ['MOLLY', 'STACHE', 'SMEE', 'ALF', 'TED', 'ALL']) {
+    assert.ok(names.includes(real), `a real character went missing: ${real}`);
+  }
+});
+
+test('a long cue is not rejected for starting further left', () => {
+  // A centred script holds the middle of the cue steady, so a long name starts
+  // well left of a short one. "BOXING ANNOUNCER PRENTISS" begins 160px before
+  // "MOLLY" does and is still a cue.
+  const CENTRE = 745;
+  const centred = (name, y) => {
+    const half = name.length * 5.5;
+    return line(name, CENTRE - half, y, { x1: CENTRE + half });
+  };
+  const scene = (n) => {
+    const out = [];
+    let y = 200;
+    for (const who of ['MOLLY', 'STACHE', 'SMEE', 'TED']) {
+      out.push(centred(who, y), speech(`${who} speaks, number ${n}.`, 315, y + 40, { x1: 1000 }));
+      y += 90;
+    }
+    return out;
+  };
+  const withLong = [
+    ...scene(9),
+    centred('BOXING ANNOUNCER PRENTISS', 600),
+    speech('Ladies and gentlemen, thanks for coming out tonight!', 315, 640, { x1: 1000 }),
+  ];
+
+  const { characters, lines } = parseScript(pages(scene(1), scene(2), withLong));
+  assert.ok(
+    characters.some((c) => c.name === 'BOXING ANNOUNCER PRENTISS'),
+    `the long cue was rejected: ${characters.map((c) => c.name).join(', ')}`,
+  );
+  assert.equal(lines.find((l) => /Ladies and gentlemen/.test(l.text)).speaker, 'BOXING ANNOUNCER PRENTISS');
+});
+
+test('a script that sets its cues flush left still parses', () => {
+  // Not every script centres. Here the cue column is an indent, not a centre,
+  // and the dialogue is the thing that moves.
+  const scene = (n) => {
+    const out = [];
+    let y = 200;
+    for (const who of ['HAMLET', 'OPHELIA', 'GERTRUDE']) {
+      out.push(
+        line(who, 200, y, { x1: 200 + who.length * 11 }),
+        line(`${who} speaks plainly here, number ${n}.`, 420, y + 40, { x1: 1100 }),
+      );
+      y += 90;
+    }
+    return out;
+  };
+  const { characters } = parseScript(pages(scene(1), scene(2), scene(3)));
+  const names = characters.map((c) => c.name);
+  for (const who of ['HAMLET', 'OPHELIA', 'GERTRUDE']) {
+    assert.ok(names.includes(who), `${who} was lost: ${names.join(', ')}`);
+  }
+});
