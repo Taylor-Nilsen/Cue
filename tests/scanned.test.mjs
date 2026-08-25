@@ -586,3 +586,43 @@ test('a narrator cue naming two people still splits into both', () => {
   assert.deepEqual(narration.speakers, ['STACHE', 'MOLLY']);
   assert.ok(!characters.some((c) => /NARRATORS/.test(c.name)));
 });
+
+test('a narrator cue that drops an honorific still finds its character', () => {
+  const many = [];
+  for (let i = 0; i < 5; i++) {
+    many.push(cue('MRS. BUMBRAKE', 300 + i * 80), speech(`Nanny says a thing, number ${i}.`, 334 + i * 80));
+    many.push(cue('ALF', 340 + i * 80), speech(`Alf replies to her, number ${i}.`, 374 + i * 80));
+  }
+  const { characters, lines } = parseScript(
+    pages(filler(1), filler(2, many), filler(3, [
+      cue('NARRATOR BUMBRAKE', 306),
+      speech('And the ship sailed on through the night.', 340),
+    ])),
+  );
+
+  assert.ok(!characters.some((c) => c.name === 'NARRATOR BUMBRAKE'));
+  assert.equal(lines.find((l) => /sailed on through/.test(l.text)).speaker, 'MRS. BUMBRAKE');
+});
+
+test('a wide indent is not mistaken for a gutter', () => {
+  // Cues sit far in from the margin, which leaves a bare band across the middle
+  // of the page. Read as a gutter it cost every line of dialogue its opening
+  // words: "That's the trunk you're sitting on?" came back as "!s trunk
+  // you're sitting on?".
+  const page = [];
+  const speakers = ['SLANK', 'STACHE', 'SMEE', 'MOLLY'];
+  let y = 200;
+  for (let i = 0; i < 8; i++) {
+    page.push(line(speakers[i % speakers.length], 700, y, { x1: 800 }));
+    page.push(line(`That's the trunk you're sitting on, number ${i}?`, 315, y + 40, { x1: 900 }));
+    y += 90;
+  }
+
+  const { lines } = parseScript(pages(filler(1), page, filler(3)));
+  const spoken = lines.filter((l) => l.type === 'dialogue' && /trunk you're sitting on/.test(l.text));
+
+  assert.equal(spoken.length, 8, 'lines went missing');
+  for (const l of spoken) {
+    assert.match(l.text, /^That's the trunk/, `a line lost its opening words: ${l.text}`);
+  }
+});
