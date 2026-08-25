@@ -634,6 +634,7 @@ function classify(flat) {
 
   foldScannedVariants(out);
   reclaimSwallowedCues(out);
+  foldEnsembleRoles(out);
   splitJointCues(out);
   return out.map((l, i) => ({ ...l, id: i, wrapped: undefined, open: undefined }));
 }
@@ -901,6 +902,68 @@ function reclaimSwallowedCues(lines) {
  * tell a joint cue from a name that happens to contain a comma — every part
  * has to be somebody who speaks elsewhere in the script on their own.
  */
+/**
+ * The ensemble words a cast doubles under. This script's own casting note puts
+ * it plainly: "all the actors should serve variously as sailors, seamen,
+ * seafarers, orphans, pirates, mermaids, Mollusks...and narrators. In those
+ * cases where the actors are narrators, character names accompany the
+ * attribution for clarity."
+ */
+const ENSEMBLE_ROLE =
+  /^(?:NARRATORS?|SAILORS?|SEAMAN|SEAMEN|SEAFARERS?|PIRATES?|MERMAIDS?|MOLLUSKS?|ORPHANS?|FIGHTERS?|SOLDIERS?|SERVANTS?|GUARDS?|CHORUS)\b[\s.:,-]*/i;
+
+/**
+ * "NARRATOR STACHE" is Stache, narrating — the same actor, so the same voice
+ * and the same lines to learn. Left alone it becomes a separate part with a
+ * separate voice, and someone reading Stache never gets cued for any of it.
+ *
+ * Only the role word comes off, and only when a real character is underneath:
+ * "SAILORS" on its own is a cue in its own right and stays exactly as it is.
+ */
+function foldEnsembleRoles(lines) {
+  const counts = new Map();
+  for (const line of lines) {
+    if (line.type === 'dialogue' && line.speaker) {
+      counts.set(line.speaker, (counts.get(line.speaker) ?? 0) + 1);
+    }
+  }
+  const known = new Set(
+    [...counts.entries()].filter(([name, n]) => n >= 3 && !ENSEMBLE_ROLE.test(name)).map(([name]) => name),
+  );
+  if (!known.size) return;
+
+  const resolved = new Map();
+  for (const name of counts.keys()) {
+    const base = stripRoles(name, known);
+    if (base && base !== name) resolved.set(name, base);
+  }
+  if (!resolved.size) return;
+
+  for (const line of lines) {
+    const base = resolved.get(line.speaker);
+    if (base) line.speaker = base;
+  }
+}
+
+function stripRoles(name, known) {
+  let text = name.trim();
+  for (let i = 0; i < 3; i++) {
+    // "MERMAID (SMEE)" wraps the real name in brackets.
+    const unwrapped = text.replace(/^\(([^)]+)\)$/, '$1').trim();
+    if (known.has(unwrapped)) return unwrapped;
+
+    const stripped = unwrapped.replace(ENSEMBLE_ROLE, '').replace(/^\(|\)$/g, '').trim();
+    if (!stripped || stripped === unwrapped) return null;
+    if (known.has(stripped)) return stripped;
+    // "NARRATORS STACHE & MOLLY" — hand the rest on for the joint-cue pass.
+    if (JOINT_CUE.test(stripped) && stripped.split(JOINT_CUE).every((part) => known.has(part.trim()))) {
+      return stripped;
+    }
+    text = stripped;
+  }
+  return null;
+}
+
 const JOINT_CUE = /[,&+]|\band\b/i;
 
 function splitJointCues(lines) {
