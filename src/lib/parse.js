@@ -208,6 +208,7 @@ function dropFacingPage(page) {
 const GUTTER_BINS = 60;
 const GUTTER_LIMIT = 0.35; // a gutter this far in is a margin, not a gutter
 const GUTTER_MIN_WIDTH = 2; // bins, so a little over 3% of the page
+const GUTTER_EDGE = 0.06; // the facing page runs right off the edge of the paper
 
 /** @returns the x to cut at, or 0 when the page is a single clean column. */
 function findGutter(words, width) {
@@ -236,9 +237,18 @@ function findGutter(words, width) {
     while (j < GUTTER_BINS && bins[j] <= empty) j++;
     if (j - i >= GUTTER_MIN_WIDTH) {
       const cut = (j / GUTTER_BINS) * width;
-      const left = words.filter((w) => w.x1 <= cut).length;
+      const outside = words.filter((w) => w.x1 <= cut);
+      const left = outside.length;
+
+      // The strip has to start at the very edge of the paper. This page is
+      // printed with a margin, so its own text never begins there — without
+      // this check a wide indent reads as a gutter and the opening words of
+      // every line of dialogue get shaved off.
+      const startsAtEdge =
+        left > 0 && Math.min(...outside.map((w) => w.x0)) / width <= GUTTER_EDGE;
+
       // The facing page is a sliver, and the real page is most of the paper.
-      if (left && left < total * 0.4 && total - left > total * 0.5) return cut;
+      if (startsAtEdge && left < total * 0.4 && total - left > total * 0.5) return cut;
     }
     i = j;
   }
@@ -955,6 +965,12 @@ function stripRoles(name, known) {
     const stripped = unwrapped.replace(ENSEMBLE_ROLE, '').replace(/^\(|\)$/g, '').trim();
     if (!stripped || stripped === unwrapped) return null;
     if (known.has(stripped)) return stripped;
+
+    // The cue may drop an honorific the cast list keeps: "NARRATOR BUMBRAKE"
+    // against a character called "MRS. BUMBRAKE". Only when exactly one
+    // character ends that way, so there's nothing to get wrong.
+    const tails = [...known].filter((n) => n.endsWith(` ${stripped}`));
+    if (tails.length === 1) return tails[0];
     // "NARRATORS STACHE & MOLLY" — hand the rest on for the joint-cue pass.
     if (JOINT_CUE.test(stripped) && stripped.split(JOINT_CUE).every((part) => known.has(part.trim()))) {
       return stripped;
