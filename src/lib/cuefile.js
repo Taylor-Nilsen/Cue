@@ -1,4 +1,5 @@
 import { voiceSlug, voiceFromSlug, NARRATOR_VOICE } from './voices.js';
+import { splitSpeakers, joinSpeakers } from './speakers.js';
 
 /**
  * The little file that remembers everything.
@@ -40,7 +41,7 @@ export function serialize({ title, characters, settings, lines }) {
       out.push(`[stage] ${line.text}`);
       out.push('');
     } else {
-      out.push(`[${line.speaker}] ${line.text}`);
+      out.push(`[${line.speakers?.length ? joinSpeakers(line.speakers) : line.speaker}] ${line.text}`);
     }
     lastType = line.type;
   }
@@ -75,6 +76,7 @@ export function parse(text) {
     speed: clamp(Number(c.speed) || 1, 0.5, 2),
   })).filter((c) => c.name);
 
+  const known = new Set(characters.map((c) => c.name));
   return {
     title: meta.title || 'Untitled script',
     settings: {
@@ -82,11 +84,11 @@ export function parse(text) {
       readStageDirections: meta.settings?.read_stage_directions !== false,
     },
     characters,
-    lines: parseBody(body),
+    lines: parseBody(body, known),
   };
 }
 
-function parseBody(body) {
+function parseBody(body, known = new Set()) {
   const lines = [];
   for (const raw of body.split('\n')) {
     const text = raw.trim();
@@ -107,7 +109,16 @@ function parseBody(body) {
     if (tag.toLowerCase() === 'stage') {
       lines.push({ id: lines.length, type: 'stage', speaker: null, text: content.trim() });
     } else {
-      lines.push({ id: lines.length, type: 'dialogue', speaker: tag.trim(), text: content.trim() });
+      // "[TED, PRENTISS]" is two people, and it has to come back as two — the
+      // cast in the front matter is what settles it.
+      const speakers = splitSpeakers(tag.trim(), known);
+      lines.push({
+        id: lines.length,
+        type: 'dialogue',
+        speaker: joinSpeakers(speakers),
+        speakers,
+        text: content.trim(),
+      });
     }
   }
   return lines;

@@ -16,8 +16,18 @@ const W = 1347;
 const H = 1743;
 
 function line(text, x0, y, { x1, conf = 92, confs = null } = {}) {
-  const words = text.split(' ').map((t, i) => ({ text: t, conf: confs?.[i] ?? conf }));
-  return { text, x0, x1: x1 ?? Math.min(1180, x0 + text.length * 11), y, h: 26, words };
+  const right = x1 ?? Math.min(1180, x0 + text.length * 11);
+  const pieces = text.split(' ');
+  const span = (right - x0) / pieces.length;
+  // Words carry their own coordinates, the way OCR reports them — the gutter
+  // detector reads the page column by column, not line by line.
+  const words = pieces.map((t, i) => ({
+    text: t,
+    conf: confs?.[i] ?? conf,
+    x0: x0 + span * i,
+    x1: x0 + span * (i + 1),
+  }));
+  return { text, x0, x1: right, y, h: 26, words };
 }
 
 const cue = (name, y) => line(name, 690, y);
@@ -283,7 +293,24 @@ test('a cast-list page does not name the play "Characters"', () => {
     pages(front, filler(1), filler(2), filler(3)),
     'Peter and the Starcatcher Script',
   );
-  assert.equal(title, 'Peter and the Starcatcher Script');
+  // The running head printed on every page is a better source than either the
+  // cast page or the filename.
+  assert.equal(title, 'Peter and the Starcatcher');
+});
+
+test('with no running head to read, the filename beats a section label', () => {
+  const front = [line('CHARACTERS', 240, 200), line('MOLLY, a girl of thirteen', 220, 240)];
+  const bare = (n) => [
+    line(`SCENE ${n}`, 374, 200),
+    cue('MOLLY', 300),
+    speech(`Something plainly said, number ${n}.`, 340),
+    cue('TED', 400),
+    speech(`And an answer to it, number ${n}.`, 440),
+    cue('BOY', 500),
+    speech(`And one more besides, number ${n}.`, 540),
+  ];
+  const { title } = parseScript(pages(front, bare(1), bare(2), bare(3)), 'my-scene.pdf');
+  assert.equal(title, 'my-scene.pdf');
 });
 
 test('a real cover page still wins over the filename', () => {
@@ -390,4 +417,120 @@ test('a one-letter misread of a name does not become a new character', () => {
   const names = characters.map((c) => c.name);
   assert.ok(!names.includes('ALE') && !names.includes('ALT'), `scanner slips became parts: ${names}`);
   assert.ok(names.includes('ALL'));
+});
+
+test('the facing page caught in the scan is not read aloud', () => {
+  // Photographing a bound book catches the edge of the opposite page: a column
+  // of truncated fragments running down the far left, well clear of the block
+  // this page is set in.
+  const bleed = [
+    line('erland.', 60, 200, 150),
+    line('e deck,', 60, 232, 150),
+    line('wind!', 60, 300, 130),
+    line('plits and', 60, 420, 160),
+    line('between.)', 60, 452, 168),
+  ];
+  const realPage = [
+    cue('SAILOR BOY', 200),
+    speech('Abandon ship, abandon ship, she is going down!', 240, { x1: 1100 }),
+    cue('SAILOR SMEE', 300),
+    speech("She's broke in half! Main-brace's gone!", 340, { x1: 1100 }),
+    cue('MOLLY', 400),
+    speech("We're saving the trunk, and that's all there is to it!", 440, { x1: 1100 }),
+    cue('SLANK', 500),
+    speech('Oi! You really missed the gravy boat, Betty.', 540, { x1: 1100 }),
+    cue('MRS. BUMBRAKE', 600),
+    speech("Don't let him smell your fear, Molly, not ever!", 640, { x1: 1100 }),
+    cue('ALF', 700),
+    speech('Don’t ye touch one hair on that woman’s legs!', 740, { x1: 1100 }),
+  ];
+
+  const { lines, characters } = parseScript(pages(filler(1), [...bleed, ...realPage], filler(3)));
+
+  for (const fragment of ['erland.', 'e deck,', 'wind!', 'plits and', 'between.)']) {
+    assert.ok(!lines.some((l) => l.text.includes(fragment)), `bleed survived: ${fragment}`);
+  }
+  assert.ok(characters.some((c) => c.name === 'SAILOR BOY'));
+  assert.ok(lines.some((l) => /Abandon ship/.test(l.text)), 'the real page went with it');
+});
+
+test('a page with no bleed loses nothing to the bleed rule', () => {
+  const { lines } = parseScript(
+    pages(
+      filler(1),
+      filler(2, [
+        cue('MOLLY', 306),
+        speech('A short one.', 340),
+        direction('(A brief aside, set in from the margin.)', 420),
+        cue('TED', 480),
+        speech('Another short one.', 514),
+      ]),
+      filler(3),
+    ),
+  );
+  assert.ok(lines.some((l) => l.text === 'A short one.'));
+  assert.ok(lines.some((l) => /A brief aside/.test(l.text)));
+  assert.ok(lines.some((l) => l.text === 'Another short one.'));
+});
+
+test('a joint cue becomes two characters who each own the line', () => {
+  const many = [];
+  for (let i = 0; i < 4; i++) {
+    many.push(cue('TED', 300 + i * 80), speech(`Ted speaks, line ${i} of his.`, 334 + i * 80));
+    many.push(cue('PRENTISS', 340 + i * 80), speech(`Prentiss answers, line ${i}.`, 374 + i * 80));
+  }
+  const { lines, characters } = parseScript(
+    pages(filler(1), filler(2, many), filler(3, [
+      cue('PRENTISS, TED', 306),
+      speech('Like what?', 340),
+    ])),
+  );
+
+  const joint = lines.find((l) => l.text === 'Like what?');
+  assert.deepEqual(joint.speakers, ['PRENTISS', 'TED']);
+  assert.ok(!characters.some((c) => c.name === 'PRENTISS, TED'), 'the pair became a character');
+
+  const ted = characters.find((c) => c.name === 'TED');
+  assert.equal(ted.lineCount, 5, 'the joint line should count for Ted as well');
+});
+
+test('bleed spliced onto the front of a real line is cut off it, not with it', () => {
+  // What page 66 of the scan actually produced: OCR read straight across the
+  // gutter, so the facing page's words arrived welded to the start of real
+  // dialogue. Dropping whole lines here would delete the play.
+  const spliced = (bleedText, realText, y, realX0 = 310) => {
+    const bleed = line(bleedText, 5, y, { x1: 230 });
+    const real = line(realText, realX0, y, { x1: 1100 });
+    return {
+      text: `${bleedText} ${realText}`,
+      x0: bleed.x0,
+      x1: real.x1,
+      y,
+      h: 26,
+      words: [...bleed.words, ...real.words],
+    };
+  };
+
+  const page = [
+    cue('SLANK', 200),
+    spliced('v his place.', 'Oi! You really missed the gravy boat, Betty.', 240),
+    cue('MRS. BUMBRAKE', 300),
+    spliced('aptain!', "Don't let him smell your fear, Molly!", 340),
+    spliced('g strikes the Neverland.', '(to SLANK, outraged on her behalf)', 380),
+    line('hurtles across the deck,', 5, 420, { x1: 220 }),
+    line('as whipped by wind!', 5, 460, { x1: 216 }),
+    cue('ALF', 520),
+    speech('Don’t ye touch one hair on that woman’s legs!', 310, 560, { x1: 1100 }),
+    cue('MOLLY', 620),
+    speech("We're saving the trunk, and that's all there is to it!", 310, 660, { x1: 1100 }),
+  ];
+
+  const { lines } = parseScript(pages(filler(1), page, filler(3)));
+  const text = lines.map((l) => l.text).join('\n');
+
+  assert.match(text, /Oi! You really missed the gravy boat, Betty\./);
+  assert.match(text, /Don't let him smell your fear, Molly!/);
+  for (const fragment of ['v his place', 'aptain!', 'g strikes', 'hurtles across', 'whipped by wind']) {
+    assert.ok(!text.includes(fragment), `facing page survived: ${fragment}`);
+  }
 });

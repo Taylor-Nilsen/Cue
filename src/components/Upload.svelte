@@ -1,9 +1,10 @@
 <script>
   import { onMount } from 'svelte';
-  import { stage, setProgress, clearProgress, uploadError } from '../lib/stage.js';
+  import { stage, uploadError } from '../lib/stage.js';
   import { get } from 'svelte/store';
   import { session, startFromScript, startFromCueFile } from '../lib/session.js';
   import { looksLikeCueFile, parse as parseCueFile } from '../lib/cuefile.js';
+  import { pending } from '../lib/pending.js';
   import { loadDraft, clearDraft } from '../lib/autosave.js';
   import { unlockAudio } from '../lib/tts.js';
 
@@ -43,31 +44,13 @@
         return;
       }
 
-      stage.set('processing');
-      const { ingestPdf } = await import('../lib/ingest.js');
-      const { parseScript } = await import('../lib/parse.js');
-
-      const { pages, scanned } = await ingestPdf(file, (u) =>
-        setProgress(u.message, u.current, u.total),
-      );
-      setProgress('Working out who says what…');
-      const parsed = parseScript(pages, file.name.replace(/\.pdf$/i, ''));
-
-      if (!parsed.characters.length) {
-        clearProgress();
-        stage.set('upload');
-        uploadError.set(
-          "Cue couldn't find any dialogue in that one. If it's a scan, a straighter or sharper copy usually does it.",
-        );
-        return;
-      }
-
-      startFromScript(parsed, { scanned });
-      clearProgress();
-      stage.set('review');
+      // Open it, but don't read it yet — first ask which pages are the script.
+      const { openPdf } = await import('../lib/pdf.js');
+      const pdf = await openPdf(file);
+      pending.set({ file, pdf, pages: pdf.numPages });
+      stage.set('range');
     } catch (err) {
-      console.error('[cue] ingest failed', err);
-      clearProgress();
+      console.error('[cue] could not open that file', err);
       stage.set('upload');
       uploadError.set(describe(err));
     }

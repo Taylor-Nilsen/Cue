@@ -69,7 +69,16 @@ export async function recognizePage(canvas) {
     for (const para of block.paragraphs ?? []) {
       for (const line of para.lines ?? []) {
         const words = (line.words ?? [])
-          .map((w) => ({ text: w.text.trim(), conf: w.confidence ?? 0 }))
+          .map((w) => ({
+            text: w.text.trim(),
+            conf: w.confidence ?? 0,
+            // Where each word sits matters as much as what it says: scanning a
+            // bound book catches a strip of the facing page, and OCR happily
+            // runs it into the start of a real line. Only the coordinates give
+            // that away.
+            x0: w.bbox?.x0 ?? line.bbox.x0,
+            x1: w.bbox?.x1 ?? line.bbox.x1,
+          }))
           .filter((w) => w.text);
         if (!words.length) continue;
         const text = words.map((w) => w.text).join(' ');

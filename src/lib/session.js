@@ -1,6 +1,7 @@
 import { writable, derived, get } from 'svelte/store';
 import { autoCast } from './voices.js';
 import { guessGender } from './names.js';
+import { speakersOf } from './speakers.js';
 
 /**
  * Everything about the rehearsal in front of you: the script, the cast, and
@@ -82,7 +83,7 @@ export function startFromCueFile(parsed) {
     settings: { ...DEFAULT_SETTINGS, ...parsed.settings },
     characters: parsed.characters.map((c, i) => ({
       name: c.name,
-      lineCount: parsed.lines.filter((l) => l.speaker === c.name).length,
+      lineCount: parsed.lines.filter((l) => speakersOf(l).includes(c.name)).length,
       gender: guessGender(c.name),
       voice: c.voice,
       color: c.color || YOU_COLORS[i % YOU_COLORS.length],
@@ -158,7 +159,7 @@ export function mergeCharacters(fromName, intoName) {
   if (fromName === intoName) return;
   session.update((s) => ({
     ...s,
-    lines: s.lines.map((l) => (l.speaker === fromName ? { ...l, speaker: intoName } : l)),
+    lines: s.lines.map((l) => rename(l, fromName, intoName)),
     characters: s.characters
       .filter((c) => c.name !== fromName)
       .map((c) =>
@@ -182,11 +183,19 @@ export function renameCharacter(fromName, toName) {
 
   session.update((s) => ({
     ...s,
-    lines: s.lines.map((l) => (l.speaker === fromName ? { ...l, speaker: clean } : l)),
+    lines: s.lines.map((l) => rename(l, fromName, clean)),
     characters: s.characters.map((c) =>
       c.name === fromName ? { ...c, name: clean, gender: guessGender(clean) } : c,
     ),
   }));
+}
+
+/** Rename one character wherever they appear, joint cues included. */
+function rename(line, from, to) {
+  const speakers = speakersOf(line);
+  if (!speakers.includes(from)) return line;
+  const renamed = [...new Set(speakers.map((n) => (n === from ? to : n)))];
+  return { ...line, speakers: renamed, speaker: renamed.join(', ') };
 }
 
 /* ----------------------------------------------------------------- counts */
@@ -194,7 +203,9 @@ export function renameCharacter(fromName, toName) {
 export function scriptStats(s) {
   const spoken = s.lines.filter((l) => l.type === 'dialogue').length;
   const yours = s.lines.filter(
-    (l) => l.type === 'dialogue' && s.characters.some((c) => c.isYou && c.name === l.speaker),
+    (l) =>
+      l.type === 'dialogue' &&
+      s.characters.some((c) => c.isYou && speakersOf(l).includes(c.name)),
   ).length;
   const shaky = s.lines.reduce((n, l) => n + (l.shaky?.length ?? 0), 0);
   return { spoken, yours, shaky, scenes: s.lines.filter((l) => l.type === 'scene').length };

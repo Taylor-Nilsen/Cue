@@ -1,38 +1,38 @@
-import { openPdf, readTextLayer, textLayerIsUsable, renderPage } from './pdf.js';
+import { readTextLayer, textLayerIsUsable, renderPage } from './pdf.js';
 import { cleanPage } from './preprocess.js';
 import { recognizePage, disposeOcr } from './ocr.js';
 import { keepAwake, releaseWake } from './wakelock.js';
 
 /**
- * Turn an uploaded PDF into positioned lines of text, one bundle per page.
+ * Turn the script pages of a PDF into positioned lines of text.
  *
  * Two roads in. A clean digital export already knows its own words, so we take
  * them. Anything else is treated as what it usually is — a photograph of a
  * page — and gets straightened, cleaned, and read.
  *
- * @param {File} file
+ * @param {any} pdf an already-open pdf.js document
+ * @param {{from: number, to: number}} range the pages holding dialogue
  * @param {(update: {message: string, current: number, total: number}) => void} onProgress
  * @returns {Promise<{pages: Page[], scanned: boolean}>}
  */
-export async function ingestPdf(file, onProgress = () => {}) {
+export async function ingestPdf(pdf, range, onProgress = () => {}) {
+  const from = Math.max(1, range?.from ?? 1);
+  const to = Math.min(pdf.numPages, range?.to ?? pdf.numPages);
+  const total = to - from + 1;
+
   onProgress({ message: 'Opening your script…', current: 0, total: 0 });
   // Reading a long scan takes minutes. Letting the screen lock halfway
   // through is a good way to come back to a job that never finished.
   keepAwake();
-  const pdf = await openPdf(file);
-  const total = pdf.numPages;
 
-  // Sniff the first few pages to decide which road we're on, rather than
-  // deciding page by page and ending up with a script read two different ways.
-  const scanned = !(await hasRealTextLayer(pdf, total));
+  // Sniff a few pages to decide which road we're on, rather than deciding page
+  // by page and ending up with a script read two different ways.
+  const scanned = !(await hasRealTextLayer(pdf, from, to));
 
   const pages = [];
-  for (let n = 1; n <= total; n++) {
-    onProgress({
-      message: scanned ? `Reading page ${n} of ${total}…` : `Reading page ${n} of ${total}`,
-      current: n,
-      total,
-    });
+  for (let n = from; n <= to; n++) {
+    const done = n - from + 1;
+    onProgress({ message: `Reading page ${done} of ${total}…`, current: done, total });
 
     const page = await pdf.getPage(n);
     let result = null;
@@ -52,14 +52,13 @@ export async function ingestPdf(file, onProgress = () => {}) {
     await new Promise((r) => setTimeout(r, 0));
   }
 
-  await pdf.destroy();
   if (scanned) await disposeOcr();
   releaseWake();
   return { pages, scanned };
 }
 
-async function hasRealTextLayer(pdf, total) {
-  const probes = [1, Math.ceil(total / 2), total].filter((n, i, a) => a.indexOf(n) === i);
+async function hasRealTextLayer(pdf, from, to) {
+  const probes = [from, Math.ceil((from + to) / 2), to].filter((n, i, a) => a.indexOf(n) === i);
   let good = 0;
   for (const n of probes) {
     const page = await pdf.getPage(n);

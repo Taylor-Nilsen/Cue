@@ -1,4 +1,5 @@
 import { displayName } from './names.js';
+import { splitSpeakers, joinSpeakers, speakersOf } from './speakers.js';
 
 /**
  * Turning a pile of positioned text into a script.
@@ -105,22 +106,36 @@ function denoise(pages) {
     page.lines = page.lines
       .map(stripLeadingLitter)
       .filter((line) => line && !isLitter(line));
+    dropFacingPage(page);
   }
 }
 
+/** Punctuation that means something at the head of a line, so never strip it. */
+const MEANINGFUL_OPENER = /^[([{<"'\u201c\u2018\u2014\u2013]/;
+
 function stripLeadingLitter(line) {
-  const words = line.words ?? [];
+  let words = line.words ?? [];
   if (words.length < 2) return line;
 
-  const first = words[0];
-  const stray =
-    first.text.length === 1 &&
-    !/^[AI]$/i.test(first.text) &&
-    (first.conf < 60 || !/[A-Za-z0-9]/.test(first.text));
-  if (!stray) return line;
+  // The gutter leaves a mark at the head of the line — "|", ":", "~~", "*".
+  // These were pushing stage direction past the bracket test, so a
+  // parenthetical got read out as somebody's line.
+  while (words.length > 1) {
+    const first = words[0];
+    const punctuation = !/[A-Za-z0-9]/.test(first.text) && !MEANINGFUL_OPENER.test(first.text);
+    const smudge =
+      first.text.length === 1 && !/^[AI]$/i.test(first.text) && first.conf < 60;
+    if (!punctuation && !smudge) break;
+    words = words.slice(1);
+  }
 
-  const rest = words.slice(1);
-  return { ...line, words: rest, text: rest.map((w) => w.text).join(' ') };
+  if (words.length === (line.words ?? []).length) return line;
+  return {
+    ...line,
+    words,
+    text: words.map((w) => w.text).join(' '),
+    x0: words.length ? Math.min(...words.map((w) => w.x0 ?? line.x0)) : line.x0,
+  };
 }
 
 function isLitter(line) {
@@ -148,6 +163,88 @@ function isLitter(line) {
   return junk > 0.3;
 }
 
+/**
+ * Cut away the strip of the facing page that got scanned along with this one.
+ *
+ * Photographing a bound book catches the edge of the page opposite, so a
+ * column of truncated fragments runs down the gutter side — "erland.",
+ * "hurtles across the deck,", "as whipped by wind!". Worse, OCR reads across
+ * the gutter and splices them onto the front of real lines, so a line comes
+ * back as "v his place. Oi! You really missed the gravy boat, Betty" and
+ * dropping whole lines would take the dialogue with it.
+ *
+ * The give-away is geometric. Ink on the page forms two columns with a bare
+ * gutter between them, and every fragment sits entirely on the wrong side of
+ * it. On one page of this script the words ran 18 deep at the left edge,
+ * thinned to nothing across 17–21% of the width, then the body began. So:
+ * find that gap, and drop the words to the left of it, word by word.
+ */
+function dropFacingPage(page) {
+  const width = page.pageWidth || 1;
+  const words = page.lines.flatMap((l) => l.words ?? []);
+  if (words.length < 40) return;
+
+  const cut = findGutter(words, width);
+  if (!cut) return;
+
+  const kept = [];
+  for (const line of page.lines) {
+    const inside = (line.words ?? []).filter((w) => w.x1 > cut);
+    if (!inside.length) continue;
+    if (inside.length === (line.words ?? []).length) {
+      kept.push(line);
+      continue;
+    }
+    kept.push({
+      ...line,
+      words: inside,
+      text: inside.map((w) => w.text).join(' '),
+      x0: Math.min(...inside.map((w) => w.x0)),
+    });
+  }
+  page.lines = kept;
+}
+
+const GUTTER_BINS = 60;
+const GUTTER_LIMIT = 0.35; // a gutter this far in is a margin, not a gutter
+const GUTTER_MIN_WIDTH = 2; // bins, so a little over 3% of the page
+
+/** @returns the x to cut at, or 0 when the page is a single clean column. */
+function findGutter(words, width) {
+  const bins = new Array(GUTTER_BINS).fill(0);
+  for (const word of words) {
+    const from = Math.max(0, Math.floor((word.x0 / width) * GUTTER_BINS));
+    const to = Math.min(GUTTER_BINS, Math.ceil((word.x1 / width) * GUTTER_BINS));
+    for (let i = from; i < to; i++) bins[i]++;
+  }
+
+  const total = words.length;
+  const empty = Math.max(1, total * 0.015);
+  const limit = Math.floor(GUTTER_BINS * GUTTER_LIMIT);
+
+  let i = 0;
+  // A plain left margin is empty too. Step over it — a gutter has ink to its
+  // left, which is the whole point.
+  while (i < limit && bins[i] <= empty) i++;
+
+  while (i < limit) {
+    if (bins[i] > empty) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < GUTTER_BINS && bins[j] <= empty) j++;
+    if (j - i >= GUTTER_MIN_WIDTH) {
+      const cut = (j / GUTTER_BINS) * width;
+      const left = words.filter((w) => w.x1 <= cut).length;
+      // The facing page is a sliver, and the real page is most of the paper.
+      if (left && left < total * 0.4 && total - left > total * 0.5) return cut;
+    }
+    i = j;
+  }
+  return 0;
+}
+
 /* ------------------------------------------------- running heads & matter */
 
 /**
@@ -155,8 +252,8 @@ function isLitter(line) {
  * page number, a revision stamp — is furniture, not script. Digits are masked
  * so "Page 4" and "Page 5" count as the same thing.
  */
-function stripRunningHeads(pages) {
-  if (pages.length < 3) return;
+function repeatedHeadKeys(pages) {
+  if (pages.length < 3) return [];
   const seen = new Map();
   for (const page of pages) {
     for (const line of page.lines) {
@@ -168,14 +265,20 @@ function stripRunningHeads(pages) {
     }
   }
   const minPages = Math.max(2, pages.length * 0.4);
-  const repeated = [...seen.entries()].filter(([, p]) => p.size >= minPages).map(([k]) => k);
+  return [...seen.entries()].filter(([, p]) => p.size >= minPages).map(([k]) => k);
+}
+
+function isRunningHead(line, repeated) {
+  if (line.yFrac > 0.09 && line.yFrac < 0.91) return false;
+  const key = headKey(line);
+  return !!key && repeated.some((known) => nearlySame(known, key));
+}
+
+function stripRunningHeads(pages) {
+  const repeated = repeatedHeadKeys(pages);
   if (!repeated.length) return;
   for (const page of pages) {
-    page.lines = page.lines.filter((line) => {
-      if (line.yFrac > 0.09 && line.yFrac < 0.91) return true;
-      const key = headKey(line);
-      return !key || !repeated.some((known) => nearlySame(known, key));
-    });
+    page.lines = page.lines.filter((line) => !isRunningHead(line, repeated));
   }
 }
 
@@ -370,6 +473,50 @@ function firstOfPage(flat, index) {
 }
 
 /**
+ * The play's name, read off the strip printed at the top of every page.
+ *
+ * Each impression of it is a little different — a page number on one side, a
+ * scanner mark on the other, a letter misread — so no single one can be
+ * trusted. What they share is the beginning: the longest run of words that
+ * most of them open with is the title.
+ */
+function titleFromRunningHead(pages, repeated) {
+  if (!repeated.length) return null;
+
+  const heads = [];
+  for (const page of pages) {
+    for (const line of page.lines) {
+      if (!isRunningHead(line, repeated)) continue;
+      const words = line.text
+        .replace(/[^A-Za-z\s']/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 1);
+      if (words.length >= 2) heads.push(words);
+    }
+  }
+  if (heads.length < 3) return null;
+
+  let prefix = [];
+  for (let i = 0; ; i++) {
+    const counts = new Map();
+    for (const words of heads) {
+      if (words.length <= i) continue;
+      // Only follow heads that have matched all the way to here.
+      if (prefix.some((w, k) => words[k]?.toUpperCase() !== w.toUpperCase())) continue;
+      const word = words[i].toUpperCase();
+      counts.set(word, (counts.get(word) ?? 0) + 1);
+    }
+    const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (!best || best[1] < heads.length * 0.5) break;
+    prefix.push(best[0]);
+    if (prefix.length > 12) break;
+  }
+
+  if (prefix.length < 2) return null;
+  return titleCase(prefix.join(' '));
+}
+
+/**
  * Section labels that are never the name of the play. A scanned script often
  * opens on the cast list rather than a cover, and "Characters" is a worse
  * title than the filename the user chose.
@@ -377,7 +524,20 @@ function firstOfPage(flat, index) {
 const SECTION_LABEL = /^(characters?|cast|cast of characters|dramatis personae|contents|table of contents|synopsis|scenes?|musical numbers?|acts?|setting|time and place|notes?|for .{0,30})$/i;
 
 function findTitle(pages, fallback) {
-  const firstPage = pages[0]?.lines ?? [];
+  // Ignore the running head. When the reader points Cue straight at the
+  // dialogue, the first line of the first page is the header — "Peter and the
+  // Starcatcher B -1 -" is a worse title than the filename. A cover title sits
+  // at the top of its page too, so what disqualifies a line is repeating on
+  // other pages, not merely being near the top.
+  const repeated = repeatedHeadKeys(pages);
+
+  // The running head is usually the title of the play, printed on every page.
+  // That beats guessing from the first page, and it's the only thing to go on
+  // when the reader has pointed Cue straight at the dialogue.
+  const fromHead = titleFromRunningHead(pages, repeated);
+  if (fromHead) return fromHead;
+
+  const firstPage = (pages[0]?.lines ?? []).filter((l) => !isRunningHead(l, repeated));
 
   // A scan that opens on the cast list has no cover to read. Every line on it
   // is a character and a description, so the filename the user chose is the
@@ -474,6 +634,7 @@ function classify(flat) {
 
   foldScannedVariants(out);
   reclaimSwallowedCues(out);
+  splitJointCues(out);
   return out.map((l, i) => ({ ...l, id: i, wrapped: undefined, open: undefined }));
 }
 
@@ -732,18 +893,51 @@ function reclaimSwallowedCues(lines) {
   }
 }
 
+/**
+ * Turn "TED, PRENTISS" from one strangely-named character into two people
+ * saying the same line.
+ *
+ * This has to wait until the cast is known, because that's the only way to
+ * tell a joint cue from a name that happens to contain a comma — every part
+ * has to be somebody who speaks elsewhere in the script on their own.
+ */
+const JOINT_CUE = /[,&+]|\band\b/i;
+
+function splitJointCues(lines) {
+  const solo = new Map();
+  for (const line of lines) {
+    if (line.type === 'dialogue' && line.speaker) {
+      solo.set(line.speaker, (solo.get(line.speaker) ?? 0) + 1);
+    }
+  }
+  // Only names that stand alone count as characters we've met. Without this
+  // filter "PRENTISS, TED" vouches for itself and never gets split.
+  const known = new Set([...solo.keys()].filter((n) => !JOINT_CUE.test(n)));
+
+  for (const line of lines) {
+    if (line.type !== 'dialogue' || !line.speaker) continue;
+    const speakers = splitSpeakers(line.speaker, known);
+    line.speakers = speakers;
+    line.speaker = joinSpeakers(speakers);
+  }
+}
+
 /* -------------------------------------------------------------- assembly */
 
 export function collectCharacters(lines) {
   const order = [];
   const counts = new Map();
   for (const line of lines) {
-    if (line.type !== 'dialogue' || !line.speaker) continue;
-    if (!counts.has(line.speaker)) {
-      counts.set(line.speaker, 0);
-      order.push(line.speaker);
+    if (line.type !== 'dialogue') continue;
+    // A line cued to three people is a line for each of them, so each gets
+    // cast, gets a voice, and can be ticked as you.
+    for (const name of speakersOf(line)) {
+      if (!counts.has(name)) {
+        counts.set(name, 0);
+        order.push(name);
+      }
+      counts.set(name, counts.get(name) + 1);
     }
-    counts.set(line.speaker, counts.get(line.speaker) + 1);
   }
   return order.map((name) => ({ name, lineCount: counts.get(name) }));
 }
