@@ -18,8 +18,12 @@ const STAGE_VERBS = /^\s*\(?\s*(enter|exit|exeunt|re-?enter|curtain|blackout|lig
 const CUE_INLINE_RE = /^\s*([A-Z][A-Z0-9 .'’&#-]{0,30}?[A-Z0-9.)])\s*[.:]\s+(\S.*)$/;
 
 export function parseScript(pages, fallbackTitle = 'Untitled script') {
-  const width = median(pages.map((p) => p.pageWidth)) || 612;
-  const withMeta = pages.map((p) => ({
+  // A scan of a bound book may hold two pages at once, or one page and a
+  // sliver of its neighbour. Sort that out before anything measures a margin.
+  const sheets = pages.flatMap(separateSheet);
+
+  const width = median(sheets.map((p) => p.pageWidth)) || 612;
+  const withMeta = sheets.map((p) => ({
     ...p,
     lines: p.lines.map((l) => ({
       ...l,
@@ -106,7 +110,6 @@ function denoise(pages) {
     page.lines = page.lines
       .map(stripLeadingLitter)
       .filter((line) => line && !isLitter(line));
-    dropFacingPage(page);
   }
 }
 
@@ -164,51 +167,86 @@ function isLitter(line) {
 }
 
 /**
- * Cut away the strip of the facing page that got scanned along with this one.
+ * Turn one scanned sheet into the page or pages actually printed on it.
  *
- * Photographing a bound book catches the edge of the page opposite, so a
- * column of truncated fragments runs down the gutter side — "erland.",
- * "hurtles across the deck,", "as whipped by wind!". Worse, OCR reads across
- * the gutter and splices them onto the front of real lines, so a line comes
- * back as "v his place. Oi! You really missed the gravy boat, Betty" and
- * dropping whole lines would take the dialogue with it.
+ * Photographing a bound book gives you one of three things: a single page, a
+ * page with a sliver of its neighbour caught down the gutter, or the whole
+ * spread. All three arrive as one image, and OCR reads straight across the
+ * gutter, so a line comes back as "…other half of the Neverland.) everyone's
+ * lips." — half of it from a page four hundred words away.
  *
- * The give-away is geometric. Ink on the page forms two columns with a bare
- * gutter between them, and every fragment sits entirely on the wrong side of
- * it. On one page of this script the words ran 18 deep at the left edge,
- * thinned to nothing across 17–21% of the width, then the body began. So:
- * find that gap, and drop the words to the left of it, word by word.
+ * The gutter is a bare vertical band with ink on both sides, so it can be
+ * found by looking at where words sit rather than what they say. What happens
+ * next depends on how much is on the far side of it:
+ *
+ * - a sliver at the very edge of the paper is the neighbouring page, and goes
+ * - two substantial halves are a spread, and become two pages, left then right
+ *
+ * Splitting rather than discarding matters: on a spread, both halves are the
+ * script, and each is somebody's dialogue.
  */
-function dropFacingPage(page) {
+function separateSheet(page) {
   const width = page.pageWidth || 1;
   const words = page.lines.flatMap((l) => l.words ?? []);
-  if (words.length < 40) return;
+  if (words.length < 40) return [page];
 
   const cut = findGutter(words, width);
-  if (!cut) return;
+  if (!cut) return [page];
 
-  const kept = [];
-  for (const line of page.lines) {
-    const inside = (line.words ?? []).filter((w) => w.x1 > cut);
-    if (!inside.length) continue;
-    if (inside.length === (line.words ?? []).length) {
-      kept.push(line);
-      continue;
-    }
-    kept.push({
-      ...line,
-      words: inside,
-      text: inside.map((w) => w.text).join(' '),
-      x0: Math.min(...inside.map((w) => w.x0)),
-    });
+  const leftWords = words.filter((w) => w.x1 <= cut).length;
+  const share = leftWords / words.length;
+
+  // A sliver: the neighbour's edge, caught in the frame.
+  if (share < SPREAD_MIN_SHARE) {
+    return [sliceSheet(page, cut, width, 0)];
   }
-  page.lines = kept;
+
+  // A spread: two real pages photographed together. Left page first.
+  return [
+    { ...sliceSheet(page, 0, cut, 0), number: page.number, pageWidth: cut },
+    { ...sliceSheet(page, cut, width, cut), number: page.number + 0.5, pageWidth: width - cut },
+  ];
 }
 
+/**
+ * Keep the words between two x positions, re-based so the slice reads like a
+ * page in its own right — margins and indents are measured from its own edge,
+ * not from the middle of a photograph.
+ */
+function sliceSheet(page, from, to, origin) {
+  const lines = [];
+  for (const line of page.lines) {
+    const inside = (line.words ?? []).filter((w) => w.x0 < to && w.x1 > from);
+    if (!inside.length) continue;
+    lines.push({
+      ...line,
+      words: inside.map((w) => ({ ...w, x0: w.x0 - origin, x1: w.x1 - origin })),
+      text: inside.map((w) => w.text).join(' '),
+      x0: Math.min(...inside.map((w) => w.x0)) - origin,
+      x1: Math.max(...inside.map((w) => w.x1)) - origin,
+    });
+  }
+  return { ...page, pageWidth: (page.pageWidth || 1) - origin, lines };
+}
+
+/** Below this share of the words, the far side of the gutter is a sliver. */
+const SPREAD_MIN_SHARE = 0.25;
+
 const GUTTER_BINS = 60;
-const GUTTER_LIMIT = 0.35; // a gutter this far in is a margin, not a gutter
+// Far enough to reach the middle of a two-page spread, where the real gutter
+// is. A single page is protected by the edge test below, not by this.
+const GUTTER_LIMIT = 0.62;
 const GUTTER_MIN_WIDTH = 2; // bins, so a little over 3% of the page
-const GUTTER_EDGE = 0.06; // the facing page runs right off the edge of the paper
+/**
+ * How close to the edge of the paper the far side must begin.
+ *
+ * Measured across sixteen pages of the test scan, the separation is clean: a
+ * page printed on its own starts its ink 22–27% of the way across, while every
+ * sheet carrying a neighbour's edge starts between 0 and 15%. This sits
+ * between the two. Without it a wide indent reads as a gutter and every line
+ * of dialogue loses its opening words.
+ */
+const GUTTER_EDGE = 0.18;
 
 /** @returns the x to cut at, or 0 when the page is a single clean column. */
 function findGutter(words, width) {
@@ -247,8 +285,10 @@ function findGutter(words, width) {
       const startsAtEdge =
         left > 0 && Math.min(...outside.map((w) => w.x0)) / width <= GUTTER_EDGE;
 
-      // The facing page is a sliver, and the real page is most of the paper.
-      if (startsAtEdge && left < total * 0.4 && total - left > total * 0.5) return cut;
+      // Both sides have to hold real text. How the split is used — drop a
+      // sliver, or separate a spread into two pages — is decided by the
+      // caller; this only has to find the fold.
+      if (startsAtEdge && left < total * 0.65 && total - left > total * 0.2) return cut;
     }
     i = j;
   }
@@ -944,7 +984,7 @@ function foldEnsembleRoles(lines) {
 
   const resolved = new Map();
   for (const name of counts.keys()) {
-    const base = stripRoles(name, known);
+    const base = stripRoles(name, known, counts);
     if (base && base !== name) resolved.set(name, base);
   }
   if (!resolved.size) return;
@@ -955,7 +995,7 @@ function foldEnsembleRoles(lines) {
   }
 }
 
-function stripRoles(name, known) {
+function stripRoles(name, known, counts) {
   let text = name.trim();
   for (let i = 0; i < 3; i++) {
     // "MERMAID (SMEE)" wraps the real name in brackets.
@@ -967,10 +1007,13 @@ function stripRoles(name, known) {
     if (known.has(stripped)) return stripped;
 
     // The cue may drop an honorific the cast list keeps: "NARRATOR BUMBRAKE"
-    // against a character called "MRS. BUMBRAKE". Only when exactly one
-    // character ends that way, so there's nothing to get wrong.
-    const tails = [...known].filter((n) => n.endsWith(` ${stripped}`));
-    if (tails.length === 1) return tails[0];
+    // against a character called "MRS. BUMBRAKE". OCR being what it is, the
+    // honorific itself has variants — "MRS." and "MRS," both turn up — so
+    // where several match, the one with the part to play wins.
+    const tails = [...known]
+      .filter((n) => n.endsWith(` ${stripped}`))
+      .sort((a, b) => (counts?.get(b) ?? 0) - (counts?.get(a) ?? 0));
+    if (tails.length) return tails[0];
     // "NARRATORS STACHE & MOLLY" — hand the rest on for the joint-cue pass.
     if (JOINT_CUE.test(stripped) && stripped.split(JOINT_CUE).every((part) => known.has(part.trim()))) {
       return stripped;
