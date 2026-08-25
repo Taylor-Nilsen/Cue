@@ -626,3 +626,48 @@ test('a wide indent is not mistaken for a gutter', () => {
     assert.match(l.text, /^That's the trunk/, `a line lost its opening words: ${l.text}`);
   }
 });
+
+test('a two-page spread becomes two pages, read left then right', () => {
+  // A bound book photographed open: both pages in one image, with OCR reading
+  // straight across the gutter so each visual line holds half of each page.
+  const spreadWidth = 2694;
+  const across = (leftText, rightText, y) => {
+    const leftWords = leftText.split(' ');
+    const rightWords = rightText.split(' ');
+    const span = (1100 - 300) / leftWords.length;
+    const rspan = (2500 - 1600) / rightWords.length;
+    const words = [
+      ...leftWords.map((t, i) => ({ text: t, conf: 92, x0: 300 + span * i, x1: 300 + span * (i + 1) })),
+      ...rightWords.map((t, i) => ({ text: t, conf: 92, x0: 1600 + rspan * i, x1: 1600 + rspan * (i + 1) })),
+    ];
+    return { text: `${leftText} ${rightText}`, x0: 300, x1: 2500, y, h: 26, words };
+  };
+
+  const spread = {
+    number: 2,
+    pageWidth: spreadWidth,
+    pageHeight: 1743,
+    lines: [
+      across('MOLLY', 'SLANK', 200),
+      across('We are saving the trunk and that is that!', 'Outta my way, the pair of ye!', 260),
+      across('ALF', 'STACHE', 320),
+      across('Do not touch one hair on that woman!', 'Run up the Jolly Roger, Mister Smee.', 380),
+      across('SMEE', 'PETER', 440),
+      across('Aye aye, Boss, right away then.', 'How do I get back to the island?', 500),
+    ],
+  };
+
+  const { lines } = parseScript(pages(filler(1), [], filler(3)).slice(0, 1).concat([spread]));
+  const said = lines.filter((l) => l.type === 'dialogue');
+
+  // Nothing from one page should be welded to the other.
+  for (const l of said) {
+    assert.ok(!/that is that!.*Outta my way/.test(l.text), `pages fused: ${l.text}`);
+  }
+  const molly = said.find((l) => /saving the trunk/.test(l.text));
+  const slank = said.find((l) => /Outta my way/.test(l.text));
+  assert.equal(molly.speaker, 'MOLLY');
+  assert.equal(slank.speaker, 'SLANK');
+  // Left page first: Molly's line comes before Slank's.
+  assert.ok(said.indexOf(molly) < said.indexOf(slank), 'the right page was read first');
+});
