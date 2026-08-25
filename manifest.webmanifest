@@ -1,0 +1,15 @@
+{
+  "name": "Cue — run your lines",
+  "short_name": "Cue",
+  "description": "Upload a script, cast it with real-sounding voices, and run your lines out loud.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFF8EC",
+  "theme_color": "#FF6F59",
+  "icons": [
+    { "src": "./icons/cue.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icons/cue-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
