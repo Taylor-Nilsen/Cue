@@ -1,8 +1,10 @@
 <script>
   import { stage } from './lib/stage.js';
+  import { clearPending } from './lib/pending.js';
   import Curtain from './components/Curtain.svelte';
   import Upload from './components/Upload.svelte';
   import Working from './components/Working.svelte';
+  import PageRange from './components/PageRange.svelte';
   import Review from './components/Review.svelte';
   import Casting from './components/Casting.svelte';
   import Reader from './components/Reader.svelte';
@@ -17,6 +19,8 @@
 
   {#if $stage === 'upload'}
     <Upload />
+  {:else if $stage === 'range'}
+    <PageRange onCancel={() => { clearPending(); stage.set('upload'); }} />
   {:else if $stage === 'processing'}
     <Working />
   {:else if $stage === 'review'}

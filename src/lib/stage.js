@@ -1,9 +1,10 @@
 import { writable } from 'svelte/store';
 
 /**
- * Which screen we're on. Cue is linear by design — upload, then a look-over,
- * then casting, then the reading screen — so a single store beats a router.
- * @type {import('svelte/store').Writable<'upload'|'processing'|'review'|'casting'|'reader'>}
+ * Which screen we're on. Cue is linear by design — upload, which pages,
+ * a look-over, casting, then the reading screen — so a single store beats a
+ * router.
+ * @type {import('svelte/store').Writable<'upload'|'range'|'processing'|'review'|'casting'|'reader'>}
  */
 export const stage = writable('upload');
 

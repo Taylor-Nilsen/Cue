@@ -3,7 +3,8 @@
   import { session, cast, updateSettings } from '../lib/session.js';
   import { stage } from '../lib/stage.js';
   import { speak, stop, prefetch, unlockAudio, voiceEngine } from '../lib/tts.js';
-  import { isSpoken, isYours, voiceFor, nextIndex, sceneAt, positionOf } from '../lib/reader.js';
+  import { isSpoken, isYours, yoursIn, voiceFor, nextIndex, sceneAt, positionOf } from '../lib/reader.js';
+  import { speakersOf } from '../lib/speakers.js';
   import { keepAwake, releaseWake } from '../lib/wakelock.js';
   import ReaderControls from './ReaderControls.svelte';
   import SettingsSheet from './SettingsSheet.svelte';
@@ -24,7 +25,7 @@
   $: following = lines[nextIndex(lines, index, settings, 1)];
   $: scene = sceneAt(lines, index);
   $: yoursNow = current ? isYours(current, characters) : false;
-  $: mine = characters.find((c) => c.isYou && c.name === current?.speaker);
+  $: mine = current ? yoursIn(current, characters)[0] : null;
   $: atEnd = index >= lines.length;
   $: position = positionOf(lines, index, settings);
 
@@ -130,8 +131,8 @@
   }
 
   function colourOf(line) {
-    const c = characters.find((x) => x.isYou && x.name === line?.speaker);
-    return c?.color ?? null;
+    if (!line) return null;
+    return characters.find((c) => c.isYou && speakersOf(line).includes(c.name))?.color ?? null;
   }
 </script>
 
@@ -187,7 +188,11 @@
           <button class="go-btn" on:click={go}>Go</button>
           <span>
             waiting for you to read
-            {#if characters.filter((c) => c.isYou).length > 1}<strong>{current.speaker}</strong>{:else}this line{/if}
+            {#if speakersOf(current).length > 1}
+              <strong>{mine?.name ?? current.speaker}</strong> — with {speakersOf(current).filter((n) => n !== mine?.name).join(', ')}
+            {:else if characters.filter((c) => c.isYou).length > 1}
+              <strong>{current.speaker}</strong>
+            {:else}this line{/if}
           </span>
         </div>
       {/if}

@@ -74,6 +74,23 @@ export async function renderPage(page, scale = RASTER_SCALE) {
 }
 
 /**
+ * A small picture of a page, for confirming by eye which pages hold the
+ * script. Deliberately tiny — this is a glance, not a read.
+ */
+export async function renderThumbnail(page, maxWidth = 260) {
+  const base = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: Math.min(1.5, maxWidth / base.width) });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
+  return canvas.toDataURL('image/jpeg', 0.7);
+}
+
+/**
  * Cluster positioned text fragments into visual lines. Fragments whose
  * baselines sit within half a line-height of each other belong together.
  */
@@ -99,9 +116,16 @@ export function groupIntoLines(boxes) {
       h: l.h,
       text: joinParts(l.parts),
       // A text layer is exact, so every word is fully confident.
-      words: l.parts.flatMap((p) =>
-        p.text.split(/\s+/).filter(Boolean).map((w) => ({ text: w, conf: 100 })),
-      ),
+      words: l.parts.flatMap((p) => {
+        const pieces = p.text.split(/\s+/).filter(Boolean);
+        const span = (p.x1 - p.x0) / Math.max(1, pieces.length);
+        return pieces.map((w, i) => ({
+          text: w,
+          conf: 100,
+          x0: p.x0 + span * i,
+          x1: p.x0 + span * (i + 1),
+        }));
+      }),
     };
   });
 }
