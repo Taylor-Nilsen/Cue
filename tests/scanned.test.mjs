@@ -534,3 +534,55 @@ test('bleed spliced onto the front of a real line is cut off it, not with it', (
     assert.ok(!text.includes(fragment), `facing page survived: ${fragment}`);
   }
 });
+
+test('an actor doubling as a narrator or a pirate keeps one voice', () => {
+  // This script's casting note: the company "serve variously as sailors,
+  // seamen, seafarers, orphans, pirates, mermaids, Mollusks...and narrators",
+  // and narration cues carry the character's name for clarity. Same actor,
+  // same voice, same lines to learn.
+  const many = [];
+  for (let i = 0; i < 5; i++) {
+    many.push(cue('STACHE', 300 + i * 80), speech(`Stache says a thing, number ${i}.`, 334 + i * 80));
+    many.push(cue('SMEE', 340 + i * 80), speech(`Smee replies to it, number ${i}.`, 374 + i * 80));
+  }
+  const { characters, lines } = parseScript(
+    pages(filler(1), filler(2, many), filler(3, [
+      cue('NARRATOR STACHE', 306),
+      speech('And so our story carries on from here.', 340),
+      cue('PIRATE SMEE', 400),
+      speech('With a pirate crew behind him now.', 434),
+      cue('MERMAID (SMEE)', 494),
+      speech('And later, briefly, as a mermaid.', 528),
+      cue('SAILORS', 588),
+      speech('We are the crew, and we stay ourselves.', 622),
+    ])),
+  );
+
+  const names = characters.map((c) => c.name);
+  assert.ok(!names.includes('NARRATOR STACHE'), 'the narrator got a separate part');
+  assert.ok(!names.includes('PIRATE SMEE'));
+  assert.ok(!names.includes('MERMAID (SMEE)'));
+  assert.ok(names.includes('SAILORS'), 'a plain ensemble cue is a part in its own right');
+
+  const narration = lines.find((l) => /our story carries on/.test(l.text));
+  assert.equal(narration.speaker, 'STACHE');
+  assert.equal(lines.find((l) => /briefly, as a mermaid/.test(l.text)).speaker, 'SMEE');
+});
+
+test('a narrator cue naming two people still splits into both', () => {
+  const many = [];
+  for (let i = 0; i < 5; i++) {
+    many.push(cue('STACHE', 300 + i * 80), speech(`Stache speaks, number ${i}.`, 334 + i * 80));
+    many.push(cue('MOLLY', 340 + i * 80), speech(`Molly answers, number ${i}.`, 374 + i * 80));
+  }
+  const { lines, characters } = parseScript(
+    pages(filler(1), filler(2, many), filler(3, [
+      cue('NARRATORS STACHE & MOLLY', 306),
+      speech('The ship went down in the storm that night.', 340),
+    ])),
+  );
+
+  const narration = lines.find((l) => /ship went down/.test(l.text));
+  assert.deepEqual(narration.speakers, ['STACHE', 'MOLLY']);
+  assert.ok(!characters.some((c) => /NARRATORS/.test(c.name)));
+});
